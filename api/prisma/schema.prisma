@@ -1,0 +1,100 @@
+// Webhook Relay - data model
+// A tenant (application) publishes Events. Subscriptions describe where events
+// should be delivered. Every delivery attempt against a subscription is recorded
+// individually so operators can debug failures and replay events.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  PAUSED
+  DISABLED // auto-disabled after sustained delivery failure
+}
+
+enum DeliveryStatus {
+  PENDING
+  SUCCEEDED
+  FAILED // exhausted all retries
+  RETRYING
+}
+
+model Tenant {
+  id            String         @id @default(cuid())
+  name          String
+  apiKeyHash    String         @unique // sha256 of the tenant's API key, never store plaintext
+  createdAt     DateTime       @default(now())
+  subscriptions Subscription[]
+  events        Event[]
+}
+
+model Subscription {
+  id            String             @id @default(cuid())
+  tenant        Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenantId      String
+  targetUrl     String
+  description   String?
+  eventTypes    String[] // e.g. ["order.created", "order.refunded"]; empty = all events
+  secret        String // used to HMAC-sign outgoing payloads; shown once on creation
+  status        SubscriptionStatus @default(ACTIVE)
+  consecutiveFailures Int          @default(0)
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+  deliveries    Delivery[]
+
+  @@index([tenantId, status])
+}
+
+model Event {
+  id         String     @id @default(cuid())
+  tenant     Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenantId   String
+  type       String // e.g. "order.created"
+  payload    Json
+  createdAt  DateTime   @default(now())
+  deliveries Delivery[]
+
+  @@index([tenantId, type])
+  @@index([tenantId, createdAt])
+}
+
+model Delivery {
+  id             String         @id @default(cuid())
+  event          Event          @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  eventId        String
+  subscription   Subscription   @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  subscriptionId String
+  status         DeliveryStatus @default(PENDING)
+  attemptCount   Int            @default(0)
+  maxAttempts    Int            @default(8)
+  lastAttemptAt  DateTime?
+  nextAttemptAt  DateTime?
+  responseStatus Int?
+  responseBodySnippet String? // truncated to protect storage
+  errorMessage   String?
+  createdAt      DateTime       @default(now())
+  attempts       DeliveryAttempt[]
+
+  @@index([subscriptionId, status])
+  @@index([eventId])
+}
+
+model DeliveryAttempt {
+  id             String   @id @default(cuid())
+  delivery       Delivery @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  deliveryId     String
+  attemptNumber  Int
+  requestedAt    DateTime @default(now())
+  durationMs     Int?
+  responseStatus Int?
+  responseBodySnippet String?
+  errorMessage   String?
+
+  @@index([deliveryId])
+}

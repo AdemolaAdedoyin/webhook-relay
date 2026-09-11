@@ -1,0 +1,67 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: webhook_relay
+      POSTGRES_PASSWORD: webhook_relay
+      POSTGRES_DB: webhook_relay
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U webhook_relay"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: ./api
+    command: sh -c "npx prisma migrate deploy && node dist/index.js"
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://webhook_relay:webhook_relay@postgres:5432/webhook_relay
+      REDIS_URL: redis://redis:6379
+      PORT: 3000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: ./api
+    command: node dist/queue/deliveryWorker.js
+    environment:
+      DATABASE_URL: postgresql://webhook_relay:webhook_relay@postgres:5432/webhook_relay
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  web:
+    build: ./web
+    ports:
+      - "5173:80"
+    environment:
+      VITE_API_BASE_URL: http://localhost:3000
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
