@@ -20,6 +20,12 @@ RUN npm run build
 FROM builder AS migrator
 CMD ["npm", "run", "prisma:deploy"]
 
+# --- local/demo seeding ---
+# The seed command uses tsx, so keep it on the builder image rather than
+# re-introducing development dependencies into the production runtime.
+FROM builder AS seeder
+CMD ["npm", "run", "seed"]
+
 # --- runtime ---
 FROM node:22-bookworm-slim AS runner
 WORKDIR /app
