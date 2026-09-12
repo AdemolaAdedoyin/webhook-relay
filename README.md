@@ -13,10 +13,13 @@ React (Vite) dashboard.
 Most CRUD demos don't say much about how someone handles distributed systems
 problems. Webhook delivery is a compact way to show several of them at once:
 
-- **At-least-once delivery with idempotent retries** — a background worker
-  retries failed deliveries with exponential backoff + jitter, capped and
-  bounded by a max attempt count, without blocking the request that
-  published the event.
+- **Durable fan-out with rebuildable queue state** — events and deliveries are
+  committed to PostgreSQL before BullMQ is treated as the execution projection.
+  Deterministic attempt job IDs and periodic reconciliation repair missing Redis
+  work after partial infrastructure failures.
+- **At-least-once delivery with idempotent queue projection** — a background
+  worker retries failed deliveries with exponential backoff + jitter, capped and
+  bounded by a max attempt count, while stale queue projections are ignored.
 - **Payload integrity** — outgoing payloads are HMAC-SHA256 signed with a
   per-subscription secret and a timestamp, the same scheme Stripe and GitHub
   use, so receivers can verify authenticity and reject replayed requests.
@@ -35,10 +38,10 @@ problems. Webhook delivery is a compact way to show several of them at once:
  ──────────────────▶│   API (Express)│   INSERT Delivery (1 per matching
                     │              │    subscription)
                     └──────┬───────┘
-                           │ enqueue
+                           │ deterministic projection
                            ▼
                     ┌──────────────┐
-                    │ Redis (BullMQ)│
+                    │ Redis (BullMQ)│◀──── periodic reconciliation from Postgres
                     └──────┬───────┘
                            │
                            ▼
@@ -46,12 +49,17 @@ problems. Webhook delivery is a compact way to show several of them at once:
                     │  Delivery     │ ─────────────────────▶│ Subscriber  │
                     │  Worker       │                        │ endpoint    │
                     └──────┬───────┘◀───────────────────────└─────────────┘
-                           │  failure → re-enqueue with backoff
+                           │  failure → persist retry + project next attempt
                            ▼
                     ┌──────────────┐
                     │  PostgreSQL   │  Delivery + DeliveryAttempt history
                     └──────────────┘
 ```
+
+PostgreSQL is the durable source of truth for delivery state. Redis/BullMQ is
+an execution layer that can be rebuilt from `PENDING` and `RETRYING` rows. The
+API and worker both reconcile missing queue projections, and deterministic
+per-attempt job IDs make those repair writes safe to repeat.
 
 The API and worker are two separate processes sharing one codebase, scaled
 independently — the API is stateless and scales on request volume, the
@@ -64,10 +72,10 @@ api/
   src/
     modules/            # subscriptions, events, deliveries — each with
                          # routes.ts (HTTP layer) + service.ts (business logic)
-    queue/               # BullMQ queue + worker (the delivery engine)
+    queue/               # BullMQ projection, reconciliation, and worker
     lib/                 # signature signing/verification, errors, logging
     middleware/          # API key auth, centralized error handling
-    __tests__/           # vitest: signature, backoff math, service logic
+    __tests__/           # vitest: signatures, backoff, reconciliation, services
   prisma/schema.prisma   # Tenant, Subscription, Event, Delivery, DeliveryAttempt
 web/
   src/
@@ -136,9 +144,8 @@ few minutes old. See `src/lib/signature.ts` for the reference implementation.
 cd api && npm test
 ```
 
-Covers signature signing/verification (including tamper and replay
-rejection), the exponential backoff calculation, and subscription service
-logic against a mocked Prisma client.
+CI also applies the committed Prisma migrations to a fresh PostgreSQL database,
+runs the API TypeScript build, and builds the React dashboard.
 
 ## What I'd add with more time
 
