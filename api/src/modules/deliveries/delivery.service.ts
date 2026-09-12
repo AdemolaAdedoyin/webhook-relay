@@ -1,6 +1,7 @@
 import { DeliveryStatus } from "@prisma/client";
 import { prisma } from "../../db";
 import { NotFoundError, AppError } from "../../lib/errors";
+import { logger } from "../../lib/logger";
 import { enqueueDelivery } from "../../queue/deliveryQueue";
 
 export async function listDeliveries(
@@ -51,6 +52,15 @@ export async function replayDelivery(tenantId: string, id: string) {
     where: { id },
     data: { status: "PENDING", nextAttemptAt: new Date() },
   });
-  await enqueueDelivery(id);
+
+  try {
+    await enqueueDelivery(id, updated.attemptCount + 1);
+  } catch (error) {
+    logger.warn(
+      { err: error, deliveryId: id },
+      "replay persisted but queue projection failed; reconciliation will repair it"
+    );
+  }
+
   return updated;
 }
