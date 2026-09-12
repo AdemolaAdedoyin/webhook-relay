@@ -21,7 +21,8 @@ function parseIpv4(address: string): number[] | null {
 function isUnsafeIpv4(address: string): boolean {
   const parts = parseIpv4(address);
   if (!parts) return false;
-  const [a, b] = parts;
+  const a = parts[0]!;
+  const b = parts[1]!;
 
   return (
     a === 0 ||
