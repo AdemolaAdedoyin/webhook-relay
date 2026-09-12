@@ -142,7 +142,7 @@ export async function publishEvent(input: PublishEventInput) {
 
   const { event, deliveries } = committed;
   const projections = await Promise.allSettled(
-    deliveries.map((delivery) => enqueueDelivery(delivery.id, 1))
+    deliveries.map((delivery) => enqueueDelivery(delivery.id, 1, 1))
   );
 
   projections.forEach((projection, index) => {
