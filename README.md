@@ -17,6 +17,11 @@ problems. Webhook delivery is a compact way to show several of them at once:
   committed to PostgreSQL before BullMQ is treated as the execution projection.
   Deterministic attempt job IDs and periodic reconciliation repair missing Redis
   work after partial infrastructure failures.
+- **Idempotent event publishing** — callers can send an `Idempotency-Key` on
+  `POST /v1/events`. The key is unique per tenant and bound to a stable
+  fingerprint of the event type and JSON payload, so network retries return the
+  original event instead of creating a second fan-out. Reusing the key for
+  different work returns `409 IDEMPOTENCY_CONFLICT`.
 - **At-least-once delivery with idempotent queue projection** — a background
   worker retries failed deliveries with exponential backoff + jitter, capped and
   bounded by a max attempt count, while stale queue projections are ignored.
@@ -73,7 +78,7 @@ api/
     modules/            # subscriptions, events, deliveries — each with
                          # routes.ts (HTTP layer) + service.ts (business logic)
     queue/               # BullMQ projection, reconciliation, and worker
-    lib/                 # signature signing/verification, errors, logging
+    lib/                 # signatures, idempotency, errors, logging
     middleware/          # API key auth, centralized error handling
     __tests__/           # vitest: signatures, backoff, reconciliation, services
   prisma/schema.prisma   # Tenant, Subscription, Event, Delivery, DeliveryAttempt
@@ -121,12 +126,19 @@ curl -X POST http://localhost:3000/v1/subscriptions \
   -H "Content-Type: application/json" \
   -d '{"targetUrl":"https://webhook.site/your-id","eventTypes":["order.created"]}'
 
-# Publish an event — fans out to every matching subscription
+# Publish an event — fans out to every matching subscription. Repeating the
+# exact request with the same Idempotency-Key returns the original event.
 curl -X POST http://localhost:3000/v1/events \
   -H "Authorization: Bearer <your-api-key>" \
+  -H "Idempotency-Key: order-created-ord-123" \
   -H "Content-Type: application/json" \
   -d '{"type":"order.created","payload":{"orderId":"ord_123","amount":4200}}'
 ```
+
+The idempotency key is scoped to the authenticated tenant. It is bound to a
+SHA-256 fingerprint of the event type and canonicalized JSON payload. Object key
+ordering therefore does not change request identity, while changing the event
+semantics under the same key is rejected with `409 IDEMPOTENCY_CONFLICT`.
 
 ## Verifying signatures as a receiver
 
@@ -149,8 +161,6 @@ runs the API TypeScript build, and builds the React dashboard.
 
 ## What I'd add with more time
 
-- Idempotency keys on `POST /v1/events` so a retried publish call can't
-  double-fan-out
 - Per-subscription delivery rate limiting, so one slow subscriber's queue
   depth can't starve others under the same tenant
 - A `deliveries.stats` endpoint (success rate, p95 latency per subscription)
