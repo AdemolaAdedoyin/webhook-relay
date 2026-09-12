@@ -57,9 +57,12 @@ export interface EventSummary {
   _count: { deliveries: number };
 }
 
+export type DeliveryStatus = "PENDING" | "PROCESSING" | "SUCCEEDED" | "FAILED" | "RETRYING";
+
 export interface DeliverySummary {
   id: string;
-  status: "PENDING" | "SUCCEEDED" | "FAILED" | "RETRYING";
+  status: DeliveryStatus;
+  runNumber: number;
   attemptCount: number;
   maxAttempts: number;
   nextAttemptAt: string | null;
@@ -71,6 +74,7 @@ export interface DeliverySummary {
 
 export interface DeliveryAttempt {
   id: string;
+  runNumber: number;
   attemptNumber: number;
   requestedAt: string;
   durationMs: number | null;
