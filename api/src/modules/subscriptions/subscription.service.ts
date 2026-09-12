@@ -1,6 +1,7 @@
 import { prisma } from "../../db";
 import { generateSecret } from "../../lib/signature";
-import { NotFoundError } from "../../lib/errors";
+import { NotFoundError, ValidationError } from "../../lib/errors";
+import { assertWebhookUrlConfigured } from "../../lib/network";
 
 export interface CreateSubscriptionInput {
   tenantId: string;
@@ -10,11 +11,20 @@ export interface CreateSubscriptionInput {
 }
 
 export async function createSubscription(input: CreateSubscriptionInput) {
+  let targetUrl: string;
+  try {
+    targetUrl = assertWebhookUrlConfigured(input.targetUrl).toString();
+  } catch (error) {
+    throw new ValidationError({
+      targetUrl: [error instanceof Error ? error.message : "Webhook target is not allowed"],
+    });
+  }
+
   const secret = generateSecret();
   const subscription = await prisma.subscription.create({
     data: {
       tenantId: input.tenantId,
-      targetUrl: input.targetUrl,
+      targetUrl,
       eventTypes: input.eventTypes,
       secret,
       ...(input.description ? { description: input.description } : {}),
