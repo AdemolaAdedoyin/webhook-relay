@@ -58,7 +58,10 @@ export async function publishEvent(input: PublishEventInput) {
 
 export async function listEvents(tenantId: string, options: { type?: string; limit: number }) {
   return prisma.event.findMany({
-    where: { tenantId, type: options.type },
+    where: {
+      tenantId,
+      ...(options.type ? { type: options.type } : {}),
+    },
     orderBy: { createdAt: "desc" },
     take: options.limit,
     include: { _count: { select: { deliveries: true } } },
