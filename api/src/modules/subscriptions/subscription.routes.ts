@@ -17,7 +17,12 @@ subscriptionRouter.post("/", async (req, res, next) => {
     if (!parsed.success) throw new ValidationError(parsed.error.flatten());
 
     const tenantId = (req as any).tenantId as string;
-    const subscription = await subscriptionService.createSubscription({ tenantId, ...parsed.data });
+    const subscription = await subscriptionService.createSubscription({
+      tenantId,
+      targetUrl: parsed.data.targetUrl,
+      eventTypes: parsed.data.eventTypes,
+      ...(parsed.data.description ? { description: parsed.data.description } : {}),
+    });
     // Full secret is only ever exposed here, at creation. Store it now.
     res.status(201).json(subscription);
   } catch (err) {
