@@ -3,6 +3,7 @@ const statusColors: Record<string, string> = {
   SUCCEEDED: "var(--success)",
   PAUSED: "var(--text-faint)",
   PENDING: "var(--teal)",
+  PROCESSING: "var(--teal)",
   RETRYING: "var(--amber)",
   DISABLED: "var(--failure)",
   FAILED: "var(--failure)",
