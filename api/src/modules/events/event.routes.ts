@@ -10,6 +10,11 @@ const publishSchema = z.object({
   payload: z.unknown(),
 });
 
+const listSchema = z.object({
+  type: z.string().min(1).max(120).optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+});
+
 eventRouter.post("/", async (req, res, next) => {
   try {
     const parsed = publishSchema.safeParse(req.body);
@@ -25,10 +30,11 @@ eventRouter.post("/", async (req, res, next) => {
 
 eventRouter.get("/", async (req, res, next) => {
   try {
+    const parsed = listSchema.safeParse(req.query);
+    if (!parsed.success) throw new ValidationError(parsed.error.flatten());
+
     const tenantId = (req as any).tenantId as string;
-    const type = typeof req.query.type === "string" ? req.query.type : undefined;
-    const limit = Math.min(Number(req.query.limit) || 50, 200);
-    res.json(await eventService.listEvents(tenantId, { type, limit }));
+    res.json(await eventService.listEvents(tenantId, parsed.data));
   } catch (err) {
     next(err);
   }
