@@ -6,18 +6,19 @@ import { assertSafeWebhookUrl, readResponseSnippet } from "../lib/network";
 import { signPayload } from "../lib/signature";
 import { redisConnection } from "./connection";
 import { DELIVERY_QUEUE_NAME, DeliveryJobData, computeBackoffMs, enqueueDelivery } from "./deliveryQueue";
+import { claimDeliveryAttempt } from "./deliveryLifecycle";
 import { reconcilePendingDeliveries } from "./reconcile";
 
 const MAX_RESPONSE_SNIPPET_BYTES = 2000;
 const RECONCILE_INTERVAL_MS = 30_000;
 
 /**
- * Performs one delivery attempt: loads the delivery + its event/subscription,
- * validates the destination again at send time, POSTs the signed payload,
- * records the outcome, and either succeeds, schedules retry, or exhausts.
+ * Performs one delivery attempt. The durable row is atomically claimed before
+ * any network side effect so duplicate BullMQ projections/workers cannot send
+ * the same run/attempt concurrently.
  */
 async function processDelivery(job: Job<DeliveryJobData>) {
-  const { deliveryId, attemptNumber } = job.data;
+  const { deliveryId, runNumber, attemptNumber } = job.data;
 
   const delivery = await prisma.delivery.findUnique({
     where: { id: deliveryId },
@@ -30,25 +31,46 @@ async function processDelivery(job: Job<DeliveryJobData>) {
   }
 
   const expectedAttempt = delivery.attemptCount + 1;
-  if (attemptNumber !== expectedAttempt) {
+  if (
+    runNumber !== delivery.runNumber ||
+    attemptNumber !== expectedAttempt ||
+    (delivery.status !== "PENDING" && delivery.status !== "RETRYING")
+  ) {
     logger.info(
-      { deliveryId, attemptNumber, expectedAttempt, status: delivery.status },
-      "skipping stale delivery queue projection"
+      {
+        deliveryId,
+        runNumber,
+        currentRunNumber: delivery.runNumber,
+        attemptNumber,
+        expectedAttempt,
+        status: delivery.status,
+      },
+      "skipping stale or already-claimed delivery queue projection"
     );
     return;
   }
 
-  if (delivery.status !== "PENDING" && delivery.status !== "RETRYING") {
-    logger.info({ deliveryId, status: delivery.status }, "delivery is already terminal, skipping");
+  const claimed = await claimDeliveryAttempt(deliveryId, runNumber, attemptNumber);
+  if (!claimed) {
+    logger.info({ deliveryId, runNumber, attemptNumber }, "delivery attempt was claimed elsewhere");
     return;
   }
 
   if (delivery.subscription.status !== "ACTIVE") {
-    logger.info({ deliveryId }, "subscription no longer active, skipping delivery");
-    await prisma.delivery.update({
-      where: { id: deliveryId },
-      data: { status: "FAILED", errorMessage: "Subscription paused or disabled" },
+    await prisma.delivery.updateMany({
+      where: {
+        id: deliveryId,
+        runNumber,
+        attemptCount: attemptNumber,
+        status: "PROCESSING",
+      },
+      data: {
+        status: "FAILED",
+        nextAttemptAt: null,
+        errorMessage: "Subscription paused or disabled",
+      },
     });
+    logger.info({ deliveryId, runNumber, attemptNumber }, "subscription is not active; delivery failed");
     return;
   }
 
@@ -69,8 +91,6 @@ async function processDelivery(job: Job<DeliveryJobData>) {
   const timeout = setTimeout(() => controller.abort(), config.DELIVERY_TIMEOUT_MS);
 
   try {
-    // Resolve and validate on every attempt so a hostname that later changes to
-    // a loopback/private/metadata address cannot bypass creation-time checks.
     const target = await assertSafeWebhookUrl(delivery.subscription.targetUrl);
 
     const res = await fetch(target, {
@@ -80,12 +100,11 @@ async function processDelivery(job: Job<DeliveryJobData>) {
         "Webhook-Signature": signature,
         "Webhook-Event-Type": delivery.event.type,
         "Webhook-Delivery-Id": delivery.id,
+        "Webhook-Delivery-Run": String(runNumber),
         "User-Agent": "webhook-relay/1.0",
       },
       body: rawBody,
       signal: controller.signal,
-      // Redirect targets are not trusted implicitly; following redirects could
-      // otherwise turn a public URL into an SSRF hop to an internal service.
       redirect: "manual",
     });
 
@@ -111,6 +130,7 @@ async function processDelivery(job: Job<DeliveryJobData>) {
   await prisma.deliveryAttempt.create({
     data: {
       deliveryId: delivery.id,
+      runNumber,
       attemptNumber,
       durationMs,
       responseStatus,
@@ -120,68 +140,98 @@ async function processDelivery(job: Job<DeliveryJobData>) {
   });
 
   if (succeeded) {
-    await prisma.$transaction([
-      prisma.delivery.update({
-        where: { id: delivery.id },
+    const finalized = await prisma.$transaction(async (tx) => {
+      const updated = await tx.delivery.updateMany({
+        where: {
+          id: delivery.id,
+          runNumber,
+          attemptCount: attemptNumber,
+          status: "PROCESSING",
+        },
         data: {
           status: "SUCCEEDED",
-          attemptCount: attemptNumber,
-          lastAttemptAt: new Date(),
           nextAttemptAt: null,
           responseStatus,
           responseBodySnippet,
           errorMessage: null,
         },
-      }),
-      prisma.subscription.update({
+      });
+
+      if (updated.count !== 1) return false;
+
+      await tx.subscription.update({
         where: { id: delivery.subscriptionId },
         data: { consecutiveFailures: 0 },
-      }),
-    ]);
-    logger.info({ deliveryId, attemptNumber, durationMs }, "delivery succeeded");
+      });
+      return true;
+    });
+
+    if (finalized) {
+      logger.info({ deliveryId, runNumber, attemptNumber, durationMs }, "delivery succeeded");
+    }
     return;
   }
 
   const exhausted = attemptNumber >= delivery.maxAttempts;
 
   if (exhausted) {
-    const failures = delivery.subscription.consecutiveFailures + 1;
-    const shouldDisable = failures >= config.SUBSCRIPTION_AUTO_DISABLE_THRESHOLD;
-
-    await prisma.$transaction([
-      prisma.delivery.update({
-        where: { id: delivery.id },
+    const result = await prisma.$transaction(async (tx) => {
+      const updated = await tx.delivery.updateMany({
+        where: {
+          id: delivery.id,
+          runNumber,
+          attemptCount: attemptNumber,
+          status: "PROCESSING",
+        },
         data: {
           status: "FAILED",
-          attemptCount: attemptNumber,
-          lastAttemptAt: new Date(),
           nextAttemptAt: null,
           responseStatus,
           responseBodySnippet,
           errorMessage,
         },
-      }),
-      prisma.subscription.update({
+      });
+
+      if (updated.count !== 1) return { finalized: false, shouldDisable: false };
+
+      const subscription = await tx.subscription.update({
         where: { id: delivery.subscriptionId },
-        data: {
-          consecutiveFailures: failures,
-          ...(shouldDisable ? { status: "DISABLED" as const } : {}),
-        },
-      }),
-    ]);
-    logger.warn({ deliveryId, attemptNumber, shouldDisable }, "delivery exhausted all attempts");
+        data: { consecutiveFailures: { increment: 1 } },
+      });
+      const shouldDisable =
+        subscription.status === "ACTIVE" &&
+        subscription.consecutiveFailures >= config.SUBSCRIPTION_AUTO_DISABLE_THRESHOLD;
+
+      if (shouldDisable) {
+        await tx.subscription.update({
+          where: { id: delivery.subscriptionId },
+          data: { status: "DISABLED" },
+        });
+      }
+
+      return { finalized: true, shouldDisable };
+    });
+
+    if (result.finalized) {
+      logger.warn(
+        { deliveryId, runNumber, attemptNumber, shouldDisable: result.shouldDisable },
+        "delivery exhausted all attempts"
+      );
+    }
     return;
   }
 
   const delay = computeBackoffMs(attemptNumber);
   const nextAttemptAt = new Date(Date.now() + delay);
-
-  await prisma.delivery.update({
-    where: { id: delivery.id },
+  const released = await prisma.delivery.updateMany({
+    where: {
+      id: delivery.id,
+      runNumber,
+      attemptCount: attemptNumber,
+      status: "PROCESSING",
+    },
     data: {
       status: "RETRYING",
-      attemptCount: attemptNumber,
-      lastAttemptAt: new Date(),
       nextAttemptAt,
       responseStatus,
       responseBodySnippet,
@@ -189,16 +239,18 @@ async function processDelivery(job: Job<DeliveryJobData>) {
     },
   });
 
+  if (released.count !== 1) return;
+
   try {
-    await enqueueDelivery(delivery.id, attemptNumber + 1, delay);
+    await enqueueDelivery(delivery.id, runNumber, attemptNumber + 1, delay);
   } catch (error) {
     logger.warn(
-      { err: error, deliveryId, attemptNumber: attemptNumber + 1 },
+      { err: error, deliveryId, runNumber, attemptNumber: attemptNumber + 1 },
       "retry persisted but queue projection failed; reconciliation will repair it"
     );
   }
 
-  logger.info({ deliveryId, attemptNumber, nextAttemptAt }, "delivery scheduled for retry");
+  logger.info({ deliveryId, runNumber, attemptNumber, nextAttemptAt }, "delivery scheduled for retry");
 }
 
 export const deliveryWorker = new Worker<DeliveryJobData>(DELIVERY_QUEUE_NAME, processDelivery, {
@@ -207,9 +259,8 @@ export const deliveryWorker = new Worker<DeliveryJobData>(DELIVERY_QUEUE_NAME, p
 });
 
 deliveryWorker.on("failed", (job, err) => {
-  // Unexpected exceptions leave durable PENDING/RETRYING state intact; the
-  // reconciler can rebuild the deterministic queue projection after Redis or
-  // database availability recovers.
+  // Once a worker has atomically claimed an attempt, an unexpected process/DB
+  // failure may leave it PROCESSING. Phase 6 adds stale in-flight recovery.
   logger.error({ jobId: job?.id, err }, "delivery job threw unexpectedly");
 });
 
