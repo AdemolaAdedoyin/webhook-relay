@@ -19,6 +19,11 @@ function assertMatchingFingerprint(existingFingerprint: string | null, fingerpri
   }
 }
 
+function toPublicEvent<T extends { idempotencyFingerprint: string | null }>(event: T) {
+  const { idempotencyFingerprint: _internalFingerprint, ...publicEvent } = event;
+  return publicEvent;
+}
+
 async function findIdempotentEvent(tenantId: string, idempotencyKey: string) {
   return prisma.event.findUnique({
     where: {
@@ -38,7 +43,7 @@ function formatIdempotentReplay(
 ) {
   const { _count, ...event } = existing;
   return {
-    event,
+    event: toPublicEvent(event),
     deliveryCount: _count.deliveries,
     idempotentReplay: true,
   };
@@ -149,11 +154,15 @@ export async function publishEvent(input: PublishEventInput) {
     }
   });
 
-  return { event, deliveryCount: deliveries.length, idempotentReplay: false };
+  return {
+    event: toPublicEvent(event),
+    deliveryCount: deliveries.length,
+    idempotentReplay: false,
+  };
 }
 
 export async function listEvents(tenantId: string, options: { type?: string; limit: number }) {
-  return prisma.event.findMany({
+  const events = await prisma.event.findMany({
     where: {
       tenantId,
       ...(options.type ? { type: options.type } : {}),
@@ -162,6 +171,8 @@ export async function listEvents(tenantId: string, options: { type?: string; lim
     take: options.limit,
     include: { _count: { select: { deliveries: true } } },
   });
+
+  return events.map(toPublicEvent);
 }
 
 export async function getEvent(tenantId: string, id: string) {
@@ -170,5 +181,5 @@ export async function getEvent(tenantId: string, id: string) {
     include: { deliveries: { include: { subscription: true } } },
   });
   if (!event) throw new NotFoundError("Event", id);
-  return event;
+  return toPublicEvent(event);
 }
