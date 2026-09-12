@@ -28,3 +28,13 @@ export class UnauthorizedError extends AppError {
     super(message, 401, "UNAUTHORIZED");
   }
 }
+
+export class IdempotencyConflictError extends AppError {
+  constructor() {
+    super(
+      "Idempotency key was already used with a different event request",
+      409,
+      "IDEMPOTENCY_CONFLICT"
+    );
+  }
+}
