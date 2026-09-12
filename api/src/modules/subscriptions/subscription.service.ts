@@ -15,9 +15,9 @@ export async function createSubscription(input: CreateSubscriptionInput) {
     data: {
       tenantId: input.tenantId,
       targetUrl: input.targetUrl,
-      description: input.description,
       eventTypes: input.eventTypes,
       secret,
+      ...(input.description ? { description: input.description } : {}),
     },
   });
   // The secret is only ever returned in full at creation time; subsequent

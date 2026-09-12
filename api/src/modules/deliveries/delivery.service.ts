@@ -1,15 +1,19 @@
+import { DeliveryStatus } from "@prisma/client";
 import { prisma } from "../../db";
 import { NotFoundError, AppError } from "../../lib/errors";
 import { enqueueDelivery } from "../../queue/deliveryQueue";
 
 export async function listDeliveries(
   tenantId: string,
-  options: { subscriptionId?: string; status?: string; limit: number }
+  options: { subscriptionId?: string; status?: DeliveryStatus; limit: number }
 ) {
   return prisma.delivery.findMany({
     where: {
-      status: options.status as any,
-      subscription: { tenantId, id: options.subscriptionId },
+      ...(options.status ? { status: options.status } : {}),
+      subscription: {
+        tenantId,
+        ...(options.subscriptionId ? { id: options.subscriptionId } : {}),
+      },
     },
     orderBy: { createdAt: "desc" },
     take: options.limit,

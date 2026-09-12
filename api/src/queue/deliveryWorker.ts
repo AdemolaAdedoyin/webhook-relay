@@ -48,9 +48,9 @@ async function processDelivery(job: Job<DeliveryJobData>) {
   const signature = signPayload(rawBody, delivery.subscription.secret);
 
   const startedAt = Date.now();
-  let responseStatus: number | undefined;
-  let responseBodySnippet: string | undefined;
-  let errorMessage: string | undefined;
+  let responseStatus: number | null = null;
+  let responseBodySnippet: string | null = null;
+  let errorMessage: string | null = null;
   let succeeded = false;
 
   try {
@@ -139,7 +139,7 @@ async function processDelivery(job: Job<DeliveryJobData>) {
         where: { id: delivery.subscriptionId },
         data: {
           consecutiveFailures: failures,
-          status: shouldDisable ? "DISABLED" : undefined,
+          ...(shouldDisable ? { status: "DISABLED" as const } : {}),
         },
       }),
     ]);

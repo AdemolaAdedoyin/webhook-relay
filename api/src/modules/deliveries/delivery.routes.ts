@@ -1,15 +1,29 @@
 import { Router } from "express";
+import { z } from "zod";
+import { ValidationError } from "../../lib/errors";
 import * as deliveryService from "./delivery.service";
 
 export const deliveryRouter = Router();
 
+const listSchema = z.object({
+  subscriptionId: z.string().min(1).optional(),
+  status: z.enum(["PENDING", "SUCCEEDED", "FAILED", "RETRYING"]).optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+});
+
 deliveryRouter.get("/", async (req, res, next) => {
   try {
+    const parsed = listSchema.safeParse(req.query);
+    if (!parsed.success) throw new ValidationError(parsed.error.flatten());
+
     const tenantId = (req as any).tenantId as string;
-    const subscriptionId = typeof req.query.subscriptionId === "string" ? req.query.subscriptionId : undefined;
-    const status = typeof req.query.status === "string" ? req.query.status : undefined;
-    const limit = Math.min(Number(req.query.limit) || 50, 200);
-    res.json(await deliveryService.listDeliveries(tenantId, { subscriptionId, status, limit }));
+    res.json(
+      await deliveryService.listDeliveries(tenantId, {
+        limit: parsed.data.limit,
+        ...(parsed.data.subscriptionId ? { subscriptionId: parsed.data.subscriptionId } : {}),
+        ...(parsed.data.status ? { status: parsed.data.status } : {}),
+      })
+    );
   } catch (err) {
     next(err);
   }

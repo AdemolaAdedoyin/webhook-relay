@@ -5,9 +5,25 @@ import * as eventService from "./event.service";
 
 export const eventRouter = Router();
 
+const jsonValueSchema: z.ZodType<unknown> = z.lazy(() =>
+  z.union([
+    z.string(),
+    z.number(),
+    z.boolean(),
+    z.null(),
+    z.array(jsonValueSchema),
+    z.record(jsonValueSchema),
+  ])
+);
+
 const publishSchema = z.object({
   type: z.string().min(1).max(120),
-  payload: z.unknown(),
+  payload: jsonValueSchema,
+});
+
+const listSchema = z.object({
+  type: z.string().min(1).max(120).optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
 });
 
 eventRouter.post("/", async (req, res, next) => {
@@ -16,7 +32,11 @@ eventRouter.post("/", async (req, res, next) => {
     if (!parsed.success) throw new ValidationError(parsed.error.flatten());
 
     const tenantId = (req as any).tenantId as string;
-    const result = await eventService.publishEvent({ tenantId, ...parsed.data });
+    const result = await eventService.publishEvent({
+      tenantId,
+      type: parsed.data.type,
+      payload: parsed.data.payload,
+    });
     res.status(202).json(result);
   } catch (err) {
     next(err);
@@ -25,10 +45,16 @@ eventRouter.post("/", async (req, res, next) => {
 
 eventRouter.get("/", async (req, res, next) => {
   try {
+    const parsed = listSchema.safeParse(req.query);
+    if (!parsed.success) throw new ValidationError(parsed.error.flatten());
+
     const tenantId = (req as any).tenantId as string;
-    const type = typeof req.query.type === "string" ? req.query.type : undefined;
-    const limit = Math.min(Number(req.query.limit) || 50, 200);
-    res.json(await eventService.listEvents(tenantId, { type, limit }));
+    res.json(
+      await eventService.listEvents(tenantId, {
+        limit: parsed.data.limit,
+        ...(parsed.data.type ? { type: parsed.data.type } : {}),
+      })
+    );
   } catch (err) {
     next(err);
   }
