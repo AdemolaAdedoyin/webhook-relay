@@ -2,21 +2,19 @@ import { Worker, Job } from "bullmq";
 import { prisma } from "../db";
 import { config } from "../config";
 import { logger } from "../lib/logger";
+import { assertSafeWebhookUrl, readResponseSnippet } from "../lib/network";
 import { signPayload } from "../lib/signature";
 import { redisConnection } from "./connection";
 import { DELIVERY_QUEUE_NAME, DeliveryJobData, computeBackoffMs, enqueueDelivery } from "./deliveryQueue";
 import { reconcilePendingDeliveries } from "./reconcile";
 
-const MAX_RESPONSE_SNIPPET = 2000;
+const MAX_RESPONSE_SNIPPET_BYTES = 2000;
 const RECONCILE_INTERVAL_MS = 30_000;
 
 /**
  * Performs one delivery attempt: loads the delivery + its event/subscription,
- * POSTs the signed payload, records the outcome, and either marks the
- * delivery SUCCEEDED, schedules the next retry, or exhausts it as FAILED.
- *
- * Every attempt (success or failure) is written to DeliveryAttempt so the
- * dashboard can show a full timeline, not just the latest status.
+ * validates the destination again at send time, POSTs the signed payload,
+ * records the outcome, and either succeeds, schedules retry, or exhausts.
  */
 async function processDelivery(job: Job<DeliveryJobData>) {
   const { deliveryId, attemptNumber } = job.data;
@@ -67,12 +65,15 @@ async function processDelivery(job: Job<DeliveryJobData>) {
   let responseBodySnippet: string | null = null;
   let errorMessage: string | null = null;
   let succeeded = false;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), config.DELIVERY_TIMEOUT_MS);
 
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), config.DELIVERY_TIMEOUT_MS);
+    // Resolve and validate on every attempt so a hostname that later changes to
+    // a loopback/private/metadata address cannot bypass creation-time checks.
+    const target = await assertSafeWebhookUrl(delivery.subscription.targetUrl);
 
-    const res = await fetch(delivery.subscription.targetUrl, {
+    const res = await fetch(target, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -83,18 +84,26 @@ async function processDelivery(job: Job<DeliveryJobData>) {
       },
       body: rawBody,
       signal: controller.signal,
+      // Redirect targets are not trusted implicitly; following redirects could
+      // otherwise turn a public URL into an SSRF hop to an internal service.
+      redirect: "manual",
     });
-    clearTimeout(timeout);
 
     responseStatus = res.status;
-    const text = await res.text().catch(() => "");
-    responseBodySnippet = text.slice(0, MAX_RESPONSE_SNIPPET);
-    succeeded = res.status >= 200 && res.status < 300;
-    if (!succeeded) {
-      errorMessage = `Endpoint responded with HTTP ${res.status}`;
+    responseBodySnippet = await readResponseSnippet(res, MAX_RESPONSE_SNIPPET_BYTES).catch(() => "");
+
+    if (res.status >= 300 && res.status < 400) {
+      errorMessage = `Endpoint redirect HTTP ${res.status} is not allowed`;
+    } else {
+      succeeded = res.status >= 200 && res.status < 300;
+      if (!succeeded) {
+        errorMessage = `Endpoint responded with HTTP ${res.status}`;
+      }
     }
   } catch (err: any) {
     errorMessage = err?.name === "AbortError" ? "Request timed out" : err?.message ?? "Unknown network error";
+  } finally {
+    clearTimeout(timeout);
   }
 
   const durationMs = Date.now() - startedAt;
