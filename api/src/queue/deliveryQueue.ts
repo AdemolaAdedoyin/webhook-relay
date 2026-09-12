@@ -3,6 +3,7 @@ import { redisConnection } from "./connection";
 
 export interface DeliveryJobData {
   deliveryId: string;
+  runNumber: number;
   attemptNumber: number;
 }
 
@@ -12,8 +13,8 @@ export const deliveryQueue = new Queue<DeliveryJobData>(DELIVERY_QUEUE_NAME, {
   connection: redisConnection,
   defaultJobOptions: {
     // Delivery retries are durable in Postgres. BullMQ executes one queue job
-    // per durable attempt and retry scheduling creates the next deterministic
-    // attempt projection explicitly.
+    // per durable run/attempt and retry scheduling creates the next deterministic
+    // projection explicitly.
     attempts: 1,
     removeOnComplete: { age: 3600 },
     removeOnFail: { age: 24 * 3600 },
@@ -27,24 +28,18 @@ export function computeBackoffMs(attempt: number): number {
   return Math.floor(base + jitter);
 }
 
-export function deliveryJobId(deliveryId: string, attemptNumber: number) {
-  return `delivery-${deliveryId}-attempt-${attemptNumber}`;
+export function deliveryJobId(deliveryId: string, runNumber: number, attemptNumber: number) {
+  return `delivery-${deliveryId}-run-${runNumber}-attempt-${attemptNumber}`;
 }
 
-/**
- * Ensure one BullMQ projection exists for a durable delivery attempt.
- *
- * The deterministic ID makes retries of the projection write safe. A failed
- * or completed Redis job may be removed and rebuilt only when Postgres still
- * says that same attempt is pending, while active/waiting/delayed jobs are
- * left untouched.
- */
+/** Ensure one BullMQ projection exists for the current durable delivery run/attempt. */
 export async function enqueueDelivery(
   deliveryId: string,
+  runNumber: number,
   attemptNumber: number,
   delayMs = 0
 ) {
-  const jobId = deliveryJobId(deliveryId, attemptNumber);
+  const jobId = deliveryJobId(deliveryId, runNumber, attemptNumber);
   const existing = await deliveryQueue.getJob(jobId);
 
   if (existing) {
@@ -65,7 +60,7 @@ export async function enqueueDelivery(
 
   return deliveryQueue.add(
     "deliver",
-    { deliveryId, attemptNumber },
+    { deliveryId, runNumber, attemptNumber },
     {
       delay: Math.max(0, delayMs),
       jobId,
