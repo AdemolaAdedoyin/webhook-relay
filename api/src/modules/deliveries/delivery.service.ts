@@ -9,8 +9,11 @@ export async function listDeliveries(
 ) {
   return prisma.delivery.findMany({
     where: {
-      status: options.status,
-      subscription: { tenantId, id: options.subscriptionId },
+      ...(options.status ? { status: options.status } : {}),
+      subscription: {
+        tenantId,
+        ...(options.subscriptionId ? { id: options.subscriptionId } : {}),
+      },
     },
     orderBy: { createdAt: "desc" },
     take: options.limit,
