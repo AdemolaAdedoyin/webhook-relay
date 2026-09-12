@@ -37,6 +37,21 @@ services:
         condition: service_healthy
     restart: "no"
 
+  seed:
+    profiles: ["tools"]
+    build:
+      context: ./api
+      target: seeder
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://webhook_relay:webhook_relay@postgres:5432/webhook_relay
+      REDIS_URL: redis://redis:6379
+      DEMO_API_KEY: ${DEMO_API_KEY:-}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
   api:
     build:
       context: ./api
@@ -73,8 +88,6 @@ services:
     build: ./web
     ports:
       - "5173:80"
-    environment:
-      VITE_API_BASE_URL: http://localhost:3000
     depends_on:
       - api
 
