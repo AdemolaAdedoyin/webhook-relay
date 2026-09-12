@@ -6,9 +6,12 @@ const BLOCKED_HOSTNAMES = new Set([
   "localhost",
   "localhost.localdomain",
   "metadata.google.internal",
-  "metadata.google.internal.",
   "169.254.169.254",
 ]);
+
+function normalizeHostname(hostname: string): string {
+  return hostname.toLowerCase().replace(/\.$/, "").replace(/^\[/, "").replace(/\]$/, "");
+}
 
 function parseIpv4(address: string): number[] | null {
   if (isIP(address) !== 4) return null;
@@ -34,32 +37,30 @@ function isUnsafeIpv4(address: string): boolean {
   );
 }
 
-function mappedIpv4(address: string): string | null {
-  const lower = address.toLowerCase();
-  if (!lower.startsWith("::ffff:")) return null;
-  const tail = lower.slice("::ffff:".length);
-  return isIP(tail) === 4 ? tail : null;
-}
-
 export function isUnsafeIpAddress(address: string): boolean {
   if (isUnsafeIpv4(address)) return true;
   if (isIP(address) !== 6) return false;
 
   const lower = address.toLowerCase();
-  const mapped = mappedIpv4(lower);
-  if (mapped) return isUnsafeIpv4(mapped);
+
+  // Reject all IPv4-mapped IPv6 destinations. This is intentionally stricter
+  // than decoding every textual variant and avoids bypasses such as
+  // ::ffff:7f00:1 representing a loopback IPv4 address.
+  if (lower.startsWith("::ffff:")) return true;
 
   return (
     lower === "::" ||
     lower === "::1" ||
     lower.startsWith("fc") ||
     lower.startsWith("fd") ||
-    /^fe[89ab]/.test(lower)
+    /^fe[89ab]/.test(lower) ||
+    lower.startsWith("ff") ||
+    lower.startsWith("2001:db8:")
   );
 }
 
 function allowedProductionHost(hostname: string): boolean {
-  return config.WEBHOOK_ALLOWED_HOSTS.includes(hostname.toLowerCase());
+  return config.WEBHOOK_ALLOWED_HOSTS.includes(hostname);
 }
 
 export function assertWebhookUrlConfigured(rawUrl: string): URL {
@@ -78,7 +79,7 @@ export function assertWebhookUrlConfigured(rawUrl: string): URL {
     throw new Error("Webhook target must not contain embedded credentials");
   }
 
-  const hostname = url.hostname.toLowerCase().replace(/\.$/, "");
+  const hostname = normalizeHostname(url.hostname);
   if (!hostname || BLOCKED_HOSTNAMES.has(hostname)) {
     throw new Error("Webhook target hostname is not allowed");
   }
@@ -101,7 +102,7 @@ export function assertWebhookUrlConfigured(rawUrl: string): URL {
 
 export async function assertSafeWebhookUrl(rawUrl: string): Promise<URL> {
   const url = assertWebhookUrlConfigured(rawUrl);
-  const hostname = url.hostname.toLowerCase().replace(/\.$/, "");
+  const hostname = normalizeHostname(url.hostname);
 
   if (isIP(hostname)) return url;
 
