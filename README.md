@@ -22,6 +22,10 @@ problems. Webhook delivery is a compact way to show several of them at once:
   fingerprint of the event type and JSON payload, so network retries return the
   original event instead of creating a second fan-out. Reusing the key for
   different work returns `409 IDEMPOTENCY_CONFLICT`.
+- **Hardened outbound delivery** — webhook targets are limited to HTTP(S),
+  credentials and local/private/reserved destinations are rejected, DNS is
+  revalidated on every attempt, redirects are not followed, production uses an
+  exact-host allowlist, and response bodies are read with a hard byte cap.
 - **At-least-once delivery with idempotent queue projection** — a background
   worker retries failed deliveries with exponential backoff + jitter, capped and
   bounded by a max attempt count, while stale queue projections are ignored.
@@ -70,6 +74,23 @@ The API and worker are two separate processes sharing one codebase, scaled
 independently — the API is stateless and scales on request volume, the
 worker scales on delivery throughput.
 
+## Webhook destination security
+
+Webhook URLs are untrusted input. Relay validates them when a subscription is
+created and again immediately before every outbound request. Delivery rejects
+non-HTTP(S) URLs, embedded credentials, localhost, private/link-local/reserved IP
+ranges, and cloud metadata-style destinations. Hostnames are resolved at send
+time so a DNS change cannot silently turn an originally public target into an
+internal address. Redirects are handled with `redirect: "manual"` rather than
+followed automatically.
+
+In production, outbound delivery is opt-in through `WEBHOOK_ALLOWED_HOSTS`, a
+comma-separated list of exact hostnames. If that list is empty, production
+subscription creation/delivery is disabled. This is the primary operational
+boundary against DNS rebinding/TOCTOU-style SSRF risk; the DNS/IP checks provide
+additional defense in depth. Response bodies are streamed only up to the stored
+snippet limit instead of buffering arbitrary endpoint responses in memory.
+
 ## Project structure
 
 ```
@@ -78,9 +99,9 @@ api/
     modules/            # subscriptions, events, deliveries — each with
                          # routes.ts (HTTP layer) + service.ts (business logic)
     queue/               # BullMQ projection, reconciliation, and worker
-    lib/                 # signatures, idempotency, errors, logging
+    lib/                 # signatures, idempotency, network safety, errors, logging
     middleware/          # API key auth, centralized error handling
-    __tests__/           # vitest: signatures, backoff, reconciliation, services
+    __tests__/           # vitest: signatures, backoff, reconciliation, security, services
   prisma/schema.prisma   # Tenant, Subscription, Event, Delivery, DeliveryAttempt
 web/
   src/
