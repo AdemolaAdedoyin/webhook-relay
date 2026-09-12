@@ -17,7 +17,13 @@ deliveryRouter.get("/", async (req, res, next) => {
     if (!parsed.success) throw new ValidationError(parsed.error.flatten());
 
     const tenantId = (req as any).tenantId as string;
-    res.json(await deliveryService.listDeliveries(tenantId, parsed.data));
+    res.json(
+      await deliveryService.listDeliveries(tenantId, {
+        limit: parsed.data.limit,
+        ...(parsed.data.subscriptionId ? { subscriptionId: parsed.data.subscriptionId } : {}),
+        ...(parsed.data.status ? { status: parsed.data.status } : {}),
+      })
+    );
   } catch (err) {
     next(err);
   }
