@@ -52,14 +52,17 @@ model Subscription {
 }
 
 model Event {
-  id         String     @id @default(cuid())
-  tenant     Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  tenantId   String
-  type       String // e.g. "order.created"
-  payload    Json
-  createdAt  DateTime   @default(now())
-  deliveries Delivery[]
+  id                     String     @id @default(cuid())
+  tenant                  Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenantId                String
+  type                    String // e.g. "order.created"
+  payload                 Json
+  idempotencyKey          String?
+  idempotencyFingerprint  String?
+  createdAt               DateTime   @default(now())
+  deliveries              Delivery[]
 
+  @@unique([tenantId, idempotencyKey])
   @@index([tenantId, type])
   @@index([tenantId, createdAt])
 }
