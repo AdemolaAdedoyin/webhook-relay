@@ -2,6 +2,7 @@ import { prisma } from "../../db";
 import { config } from "../../config";
 import { enqueueDelivery } from "../../queue/deliveryQueue";
 import { NotFoundError } from "../../lib/errors";
+import { logger } from "../../lib/logger";
 
 export interface PublishEventInput {
   tenantId: string;
@@ -13,11 +14,11 @@ export interface PublishEventInput {
  * Publishing an event is the fan-out entry point: we persist the event, find
  * every ACTIVE subscription interested in this event type (an empty
  * eventTypes array means "subscribed to everything"), create one Delivery
- * row per match, and enqueue each for the worker to process.
+ * row per match, and then project those durable deliveries into BullMQ.
  *
- * Event + Delivery creation happens in one transaction so we never end up
- * with an event that has no delivery attempts recorded because of a crash
- * between the two writes.
+ * Event + Delivery creation happens in one transaction. Redis is deliberately
+ * treated as a rebuildable execution layer: projection failures are logged and
+ * repaired by reconciliation instead of rolling back durable state.
  */
 export async function publishEvent(input: PublishEventInput) {
   const subscriptions = await prisma.subscription.findMany({
@@ -51,7 +52,18 @@ export async function publishEvent(input: PublishEventInput) {
     return { event, deliveries };
   });
 
-  await Promise.all(deliveries.map((d) => enqueueDelivery(d.id)));
+  const projections = await Promise.allSettled(
+    deliveries.map((delivery) => enqueueDelivery(delivery.id, 1))
+  );
+
+  projections.forEach((projection, index) => {
+    if (projection.status === "rejected") {
+      logger.warn(
+        { err: projection.reason, deliveryId: deliveries[index]?.id, eventId: event.id },
+        "delivery persisted but queue projection failed; reconciliation will repair it"
+      );
+    }
+  });
 
   return { event, deliveryCount: deliveries.length };
 }
