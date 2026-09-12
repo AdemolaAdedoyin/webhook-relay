@@ -21,6 +21,8 @@ const publishSchema = z.object({
   payload: jsonValueSchema,
 });
 
+const idempotencyKeySchema = z.string().trim().min(1).max(200);
+
 const listSchema = z.object({
   type: z.string().min(1).max(120).optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),
@@ -31,11 +33,23 @@ eventRouter.post("/", async (req, res, next) => {
     const parsed = publishSchema.safeParse(req.body);
     if (!parsed.success) throw new ValidationError(parsed.error.flatten());
 
+    const rawIdempotencyKey = req.get("Idempotency-Key");
+    const parsedIdempotencyKey = rawIdempotencyKey
+      ? idempotencyKeySchema.safeParse(rawIdempotencyKey)
+      : undefined;
+
+    if (parsedIdempotencyKey && !parsedIdempotencyKey.success) {
+      throw new ValidationError({ idempotencyKey: parsedIdempotencyKey.error.flatten().formErrors });
+    }
+
     const tenantId = (req as any).tenantId as string;
     const result = await eventService.publishEvent({
       tenantId,
       type: parsed.data.type,
       payload: parsed.data.payload,
+      ...(parsedIdempotencyKey?.success
+        ? { idempotencyKey: parsedIdempotencyKey.data }
+        : {}),
     });
     res.status(202).json(result);
   } catch (err) {
