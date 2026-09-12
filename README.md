@@ -26,18 +26,21 @@ problems. Webhook delivery is a compact way to show several of them at once:
   credentials and local/private/reserved destinations are rejected, DNS is
   revalidated on every attempt, redirects are not followed, production uses an
   exact-host allowlist, and response bodies are read with a hard byte cap.
+- **Race-safe execution and replay** — each durable run/attempt is atomically
+  claimed before any outbound request. Duplicate queue work therefore cannot
+  send the same attempt concurrently, while manual replay starts a new run with
+  a fresh retry budget and keeps prior attempt history intact.
 - **At-least-once delivery with idempotent queue projection** — a background
   worker retries failed deliveries with exponential backoff + jitter, capped and
   bounded by a max attempt count, while stale queue projections are ignored.
 - **Payload integrity** — outgoing payloads are HMAC-SHA256 signed with a
-  per-subscription secret and a timestamp, the same scheme Stripe and GitHub
-  use, so receivers can verify authenticity and reject replayed requests.
+  per-subscription secret and a timestamp, so receivers can verify authenticity
+  and reject replayed requests.
 - **Failure isolation** — one subscriber's broken endpoint can't affect
-  delivery to any other subscriber; a subscription that fails consistently
-  is automatically disabled rather than retried forever.
-- **Full auditability** — every attempt (not just the latest) is recorded,
-  so a support/on-call engineer can see exactly what happened and replay a
-  delivery once the receiving endpoint is fixed.
+  delivery to any other subscriber; exhausted failures increment the
+  subscription failure counter atomically and sustained failure auto-disables it.
+- **Full auditability** — every run and attempt is recorded, so an operator can
+  see exactly what happened and safely replay a delivery after the receiver is fixed.
 
 ## Architecture
 
@@ -66,9 +69,11 @@ problems. Webhook delivery is a compact way to show several of them at once:
 ```
 
 PostgreSQL is the durable source of truth for delivery state. Redis/BullMQ is
-an execution layer that can be rebuilt from `PENDING` and `RETRYING` rows. The
-API and worker both reconcile missing queue projections, and deterministic
-per-attempt job IDs make those repair writes safe to repeat.
+an execution layer that can be rebuilt from `PENDING` and `RETRYING` rows. Queue
+jobs are scoped to a delivery `runNumber` + `attemptNumber`, and the worker uses
+an atomic `PROCESSING` transition before making an outbound request. A manual
+replay increments the run number and resets only the current run's retry budget;
+historical attempts remain available for audit/debugging.
 
 The API and worker are two separate processes sharing one codebase, scaled
 independently — the API is stateless and scales on request volume, the
@@ -96,12 +101,11 @@ snippet limit instead of buffering arbitrary endpoint responses in memory.
 ```
 api/
   src/
-    modules/            # subscriptions, events, deliveries — each with
-                         # routes.ts (HTTP layer) + service.ts (business logic)
-    queue/               # BullMQ projection, reconciliation, and worker
+    modules/            # subscriptions, events, deliveries — HTTP + business logic
+    queue/               # BullMQ projection, atomic claims, reconciliation, worker
     lib/                 # signatures, idempotency, network safety, errors, logging
     middleware/          # API key auth, centralized error handling
-    __tests__/           # vitest: signatures, backoff, reconciliation, security, services
+    __tests__/           # vitest: delivery lifecycle, security, signatures, services
   prisma/schema.prisma   # Tenant, Subscription, Event, Delivery, DeliveryAttempt
 web/
   src/
@@ -124,10 +128,10 @@ worker, and the dashboard at http://localhost:5173.
 
 ```bash
 cd api
-cp .env.example .env        # point at your Postgres/Redis
+cp .env.example .env
 npm install
 npx prisma migrate dev
-npm run seed                 # prints a demo tenant API key
+npm run seed
 npm run dev                  # API on :3000
 npm run worker:dev           # in a second terminal
 ```
@@ -135,7 +139,7 @@ npm run worker:dev           # in a second terminal
 ```bash
 cd web
 npm install
-npm run dev                  # dashboard on :5173, paste the API key when prompted
+npm run dev                  # dashboard on :5173
 ```
 
 ## Trying it via the API directly
@@ -147,8 +151,8 @@ curl -X POST http://localhost:3000/v1/subscriptions \
   -H "Content-Type: application/json" \
   -d '{"targetUrl":"https://webhook.site/your-id","eventTypes":["order.created"]}'
 
-# Publish an event — fans out to every matching subscription. Repeating the
-# exact request with the same Idempotency-Key returns the original event.
+# Publish an event — repeating the exact request with the same Idempotency-Key
+# returns the original event instead of creating another fan-out.
 curl -X POST http://localhost:3000/v1/events \
   -H "Authorization: Bearer <your-api-key>" \
   -H "Idempotency-Key: order-created-ord-123" \
