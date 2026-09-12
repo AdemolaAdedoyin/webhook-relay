@@ -5,8 +5,10 @@ import { logger } from "../lib/logger";
 import { signPayload } from "../lib/signature";
 import { redisConnection } from "./connection";
 import { DELIVERY_QUEUE_NAME, DeliveryJobData, computeBackoffMs, enqueueDelivery } from "./deliveryQueue";
+import { reconcilePendingDeliveries } from "./reconcile";
 
 const MAX_RESPONSE_SNIPPET = 2000;
+const RECONCILE_INTERVAL_MS = 30_000;
 
 /**
  * Performs one delivery attempt: loads the delivery + its event/subscription,
@@ -17,7 +19,7 @@ const MAX_RESPONSE_SNIPPET = 2000;
  * dashboard can show a full timeline, not just the latest status.
  */
 async function processDelivery(job: Job<DeliveryJobData>) {
-  const { deliveryId } = job.data;
+  const { deliveryId, attemptNumber } = job.data;
 
   const delivery = await prisma.delivery.findUnique({
     where: { id: deliveryId },
@@ -26,6 +28,20 @@ async function processDelivery(job: Job<DeliveryJobData>) {
 
   if (!delivery) {
     logger.warn({ deliveryId }, "delivery not found, skipping (likely deleted)");
+    return;
+  }
+
+  const expectedAttempt = delivery.attemptCount + 1;
+  if (attemptNumber !== expectedAttempt) {
+    logger.info(
+      { deliveryId, attemptNumber, expectedAttempt, status: delivery.status },
+      "skipping stale delivery queue projection"
+    );
+    return;
+  }
+
+  if (delivery.status !== "PENDING" && delivery.status !== "RETRYING") {
+    logger.info({ deliveryId, status: delivery.status }, "delivery is already terminal, skipping");
     return;
   }
 
@@ -38,7 +54,6 @@ async function processDelivery(job: Job<DeliveryJobData>) {
     return;
   }
 
-  const attemptNumber = delivery.attemptCount + 1;
   const rawBody = JSON.stringify({
     id: delivery.event.id,
     type: delivery.event.type,
@@ -103,6 +118,7 @@ async function processDelivery(job: Job<DeliveryJobData>) {
           status: "SUCCEEDED",
           attemptCount: attemptNumber,
           lastAttemptAt: new Date(),
+          nextAttemptAt: null,
           responseStatus,
           responseBodySnippet,
           errorMessage: null,
@@ -130,6 +146,7 @@ async function processDelivery(job: Job<DeliveryJobData>) {
           status: "FAILED",
           attemptCount: attemptNumber,
           lastAttemptAt: new Date(),
+          nextAttemptAt: null,
           responseStatus,
           responseBodySnippet,
           errorMessage,
@@ -163,7 +180,15 @@ async function processDelivery(job: Job<DeliveryJobData>) {
     },
   });
 
-  await enqueueDelivery(delivery.id, delay);
+  try {
+    await enqueueDelivery(delivery.id, attemptNumber + 1, delay);
+  } catch (error) {
+    logger.warn(
+      { err: error, deliveryId, attemptNumber: attemptNumber + 1 },
+      "retry persisted but queue projection failed; reconciliation will repair it"
+    );
+  }
+
   logger.info({ deliveryId, attemptNumber, nextAttemptAt }, "delivery scheduled for retry");
 }
 
@@ -173,10 +198,21 @@ export const deliveryWorker = new Worker<DeliveryJobData>(DELIVERY_QUEUE_NAME, p
 });
 
 deliveryWorker.on("failed", (job, err) => {
-  // This fires only for unexpected exceptions in processDelivery itself
-  // (e.g. a DB outage) — business-logic failures are handled above and
-  // never throw, so the job always resolves.
+  // Unexpected exceptions leave durable PENDING/RETRYING state intact; the
+  // reconciler can rebuild the deterministic queue projection after Redis or
+  // database availability recovers.
   logger.error({ jobId: job?.id, err }, "delivery job threw unexpectedly");
 });
+
+void reconcilePendingDeliveries().catch((error) => {
+  logger.warn({ err: error }, "initial delivery reconciliation failed");
+});
+
+const reconcileTimer = setInterval(() => {
+  void reconcilePendingDeliveries().catch((error) => {
+    logger.warn({ err: error }, "periodic delivery reconciliation failed");
+  });
+}, RECONCILE_INTERVAL_MS);
+reconcileTimer.unref();
 
 logger.info("delivery worker started");
