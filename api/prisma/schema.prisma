@@ -20,6 +20,7 @@ enum SubscriptionStatus {
 
 enum DeliveryStatus {
   PENDING
+  PROCESSING // atomically claimed by one worker for the current run/attempt
   SUCCEEDED
   FAILED // exhausted all retries
   RETRYING
@@ -74,7 +75,8 @@ model Delivery {
   subscription   Subscription   @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
   subscriptionId String
   status         DeliveryStatus @default(PENDING)
-  attemptCount   Int            @default(0)
+  runNumber      Int            @default(1) // increments for each manual replay
+  attemptCount   Int            @default(0) // attempts consumed in the current run
   maxAttempts    Int            @default(8)
   lastAttemptAt  DateTime?
   nextAttemptAt  DateTime?
@@ -92,6 +94,7 @@ model DeliveryAttempt {
   id             String   @id @default(cuid())
   delivery       Delivery @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
   deliveryId     String
+  runNumber      Int      @default(1)
   attemptNumber  Int
   requestedAt    DateTime @default(now())
   durationMs     Int?
@@ -99,5 +102,6 @@ model DeliveryAttempt {
   responseBodySnippet String?
   errorMessage   String?
 
-  @@index([deliveryId])
+  @@unique([deliveryId, runNumber, attemptNumber])
+  @@index([deliveryId, requestedAt])
 }

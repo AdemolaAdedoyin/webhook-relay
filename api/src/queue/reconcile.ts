@@ -9,6 +9,7 @@ export async function reconcilePendingDeliveries() {
     take: 1_000,
     select: {
       id: true,
+      runNumber: true,
       attemptCount: true,
       nextAttemptAt: true,
     },
@@ -24,12 +25,17 @@ export async function reconcilePendingDeliveries() {
       : 0;
 
     try {
-      await enqueueDelivery(delivery.id, attemptNumber, delayMs);
+      await enqueueDelivery(delivery.id, delivery.runNumber, attemptNumber, delayMs);
       repaired += 1;
     } catch (error) {
       failed += 1;
       logger.warn(
-        { err: error, deliveryId: delivery.id, attemptNumber },
+        {
+          err: error,
+          deliveryId: delivery.id,
+          runNumber: delivery.runNumber,
+          attemptNumber,
+        },
         "failed to reconcile delivery queue projection"
       );
     }

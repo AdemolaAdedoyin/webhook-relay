@@ -17,7 +17,7 @@ export default function Deliveries() {
 
   useEffect(() => {
     refresh();
-    const interval = setInterval(refresh, 5000); // poll — retries change status in the background
+    const interval = setInterval(refresh, 5000);
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [eventId]);
@@ -51,6 +51,7 @@ export default function Deliveries() {
                 <th>Event</th>
                 <th>Target</th>
                 <th>Status</th>
+                <th>Run</th>
                 <th>Attempts</th>
                 <th>Response</th>
               </tr>
@@ -65,6 +66,7 @@ export default function Deliveries() {
                   <td>
                     <StatusPill status={d.status} />
                   </td>
+                  <td>{d.runNumber}</td>
                   <td>
                     {d.attemptCount}/{d.maxAttempts}
                   </td>
@@ -117,7 +119,11 @@ function DeliveryDrawer({
     }
   }
 
-  const canReplay = delivery && delivery.status !== "PENDING" && delivery.status !== "RETRYING";
+  const canReplay =
+    delivery &&
+    delivery.status !== "PENDING" &&
+    delivery.status !== "RETRYING" &&
+    delivery.status !== "PROCESSING";
 
   return (
     <div
@@ -166,6 +172,7 @@ function DeliveryDrawer({
           <DetailRow label="Event type" value={delivery.event.type} mono />
           <DetailRow label="Target" value={delivery.subscription.targetUrl} mono />
           <DetailRow label="Status" value={<StatusPill status={delivery.status} />} />
+          <DetailRow label="Run" value={String(delivery.runNumber)} />
           <DetailRow label="Attempts" value={`${delivery.attemptCount} / ${delivery.maxAttempts}`} />
           {delivery.nextAttemptAt && (
             <DetailRow label="Next attempt" value={new Date(delivery.nextAttemptAt).toLocaleString()} />
@@ -187,7 +194,7 @@ function DeliveryDrawer({
                 }}
               >
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span>Attempt {attempt.attemptNumber}</span>
+                  <span>Run {attempt.runNumber} · Attempt {attempt.attemptNumber}</span>
                   <span style={{ color: "var(--text-faint)" }}>
                     {new Date(attempt.requestedAt).toLocaleTimeString()}
                   </span>

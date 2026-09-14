@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   postgres:
     image: postgres:16-alpine
@@ -27,30 +25,62 @@ services:
       timeout: 5s
       retries: 10
 
+  migrate:
+    build:
+      context: ./api
+      target: migrator
+    environment:
+      DATABASE_URL: postgresql://webhook_relay:webhook_relay@postgres:5432/webhook_relay
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  seed:
+    profiles: ["tools"]
+    build:
+      context: ./api
+      target: seeder
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://webhook_relay:webhook_relay@postgres:5432/webhook_relay
+      REDIS_URL: redis://redis:6379
+      DEMO_API_KEY: ${DEMO_API_KEY:-}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
   api:
-    build: ./api
-    command: sh -c "npx prisma migrate deploy && node dist/index.js"
+    build:
+      context: ./api
+      target: runner
     ports:
       - "3000:3000"
     environment:
+      NODE_ENV: development
       DATABASE_URL: postgresql://webhook_relay:webhook_relay@postgres:5432/webhook_relay
       REDIS_URL: redis://redis:6379
       PORT: 3000
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
 
   worker:
-    build: ./api
+    build:
+      context: ./api
+      target: runner
     command: node dist/queue/deliveryWorker.js
     environment:
+      NODE_ENV: development
       DATABASE_URL: postgresql://webhook_relay:webhook_relay@postgres:5432/webhook_relay
       REDIS_URL: redis://redis:6379
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
 
@@ -58,8 +88,6 @@ services:
     build: ./web
     ports:
       - "5173:80"
-    environment:
-      VITE_API_BASE_URL: http://localhost:3000
     depends_on:
       - api
 
