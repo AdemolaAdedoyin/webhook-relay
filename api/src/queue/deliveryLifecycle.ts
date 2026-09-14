@@ -23,6 +23,9 @@ export async function claimDeliveryAttempt(
       lastAttemptAt: now,
       processingHeartbeatAt: now,
       nextAttemptAt: null,
+      responseStatus: null,
+      responseBodySnippet: null,
+      errorMessage: null,
     },
   });
 
