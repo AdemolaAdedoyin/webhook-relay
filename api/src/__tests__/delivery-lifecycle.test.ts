@@ -35,6 +35,8 @@ describe("delivery attempt claims", () => {
         data: expect.objectContaining({
           status: "PROCESSING",
           attemptCount: 2,
+          lastAttemptAt: expect.any(Date),
+          processingHeartbeatAt: expect.any(Date),
           nextAttemptAt: null,
         }),
       })
