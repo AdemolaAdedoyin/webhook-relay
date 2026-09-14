@@ -21,6 +21,8 @@ const envSchema = z.object({
   DELIVERY_MAX_ATTEMPTS: z.coerce.number().int().min(1).default(8),
   DELIVERY_TIMEOUT_MS: z.coerce.number().int().min(100).default(10_000),
   DELIVERY_CONCURRENCY: z.coerce.number().int().min(1).default(10),
+  DELIVERY_PROCESSING_HEARTBEAT_MS: z.coerce.number().int().min(250).default(5_000),
+  DELIVERY_PROCESSING_STALE_MS: z.coerce.number().int().min(1_000).default(60_000),
   // Exact hostnames allowed to receive production webhook traffic. Production
   // delivery remains disabled until at least one host is explicitly trusted.
   WEBHOOK_ALLOWED_HOSTS: commaSeparatedHosts,
