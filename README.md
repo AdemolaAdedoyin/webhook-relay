@@ -30,6 +30,10 @@ problems. Webhook delivery is a compact way to show several of them at once:
   claimed before any outbound request. Duplicate queue work therefore cannot
   send the same attempt concurrently, while manual replay starts a new run with
   a fresh retry budget and keeps prior attempt history intact.
+- **Crash recovery and graceful draining** — `PROCESSING` deliveries maintain a
+  durable heartbeat. Stale leases are recovered into the next durable attempt,
+  and SIGTERM/SIGINT stops reconciliation and lets active BullMQ jobs finish
+  before Redis and PostgreSQL connections are closed.
 - **At-least-once delivery with idempotent queue projection** — a background
   worker retries failed deliveries with exponential backoff + jitter, capped and
   bounded by a max attempt count, while stale queue projections are ignored.
@@ -39,8 +43,9 @@ problems. Webhook delivery is a compact way to show several of them at once:
 - **Failure isolation** — one subscriber's broken endpoint can't affect
   delivery to any other subscriber; exhausted failures increment the
   subscription failure counter atomically and sustained failure auto-disables it.
-- **Full auditability** — every run and attempt is recorded, so an operator can
-  see exactly what happened and safely replay a delivery after the receiver is fixed.
+- **Full auditability** — completed network attempts are recorded by run and
+  attempt, so an operator can see what happened and safely replay a delivery
+  after the receiver is fixed.
 
 ## Architecture
 
@@ -53,7 +58,7 @@ problems. Webhook delivery is a compact way to show several of them at once:
                            │ deterministic projection
                            ▼
                     ┌──────────────┐
-                    │ Redis/BullMQ │◀──── periodic reconciliation from Postgres
+                    │ Redis/BullMQ │◀──── reconciliation + stale recovery from Postgres
                     └──────┬───────┘
                            │
                            ▼
@@ -71,9 +76,17 @@ problems. Webhook delivery is a compact way to show several of them at once:
 PostgreSQL is the durable source of truth for delivery state. Redis/BullMQ is
 an execution layer that can be rebuilt from `PENDING` and `RETRYING` rows. Queue
 jobs are scoped to a delivery `runNumber` + `attemptNumber`, and the worker uses
-an atomic `PROCESSING` transition before making an outbound request. A manual
-replay increments the run number and resets only the current run's retry budget;
-historical attempts remain available for audit/debugging.
+an atomic `PROCESSING` transition before making an outbound request. While an
+attempt is active, the worker refreshes `processingHeartbeatAt`. If the lease
+becomes stale, recovery fences the old run/attempt state and schedules the next
+attempt. A manual replay increments the run number and resets only the current
+run's retry budget; historical attempts remain available for audit/debugging.
+
+Recovery intentionally preserves **at-least-once** semantics. If a worker dies
+after the receiver accepted a request but before Relay durably finalized it, the
+recovered attempt may deliver the event again. Receivers should therefore treat
+`Webhook-Delivery-Id` + `Webhook-Delivery-Run` as the idempotency identity for a
+logical delivery run.
 
 The API and worker are separate processes sharing one codebase, so they can be
 scaled independently.
@@ -100,11 +113,11 @@ can be used without configuring a production allowlist.
 api/
   src/
     modules/            # subscriptions, events, deliveries — HTTP + business logic
-    queue/               # BullMQ projection, atomic claims, reconciliation, worker
+    queue/               # BullMQ projection, claims, lease recovery, reconciliation
     lib/                 # signatures, idempotency, network safety, errors, logging
     middleware/          # API key auth, centralized error handling
     scripts/seed.ts      # demo tenant/API-key seed utility
-    __tests__/           # vitest: delivery lifecycle, security, signatures, services
+    __tests__/           # vitest: delivery lifecycle, recovery, security, services
   prisma/schema.prisma   # Tenant, Subscription, Event, Delivery, DeliveryAttempt
 web/
   src/                   # React/Vite operations dashboard
@@ -169,6 +182,20 @@ DEMO_API_KEY="wr_your_local_key_here" docker compose --profile tools run --rm se
 
 The production runtime image intentionally does not contain `tsx` or the Prisma
 CLI; migrations and seeding use dedicated Docker targets instead.
+
+### Worker recovery tuning
+
+The defaults are intentionally conservative for normal webhook request times:
+
+```env
+DELIVERY_PROCESSING_HEARTBEAT_MS=5000
+DELIVERY_PROCESSING_STALE_MS=60000
+```
+
+The stale timeout must be greater than twice the heartbeat interval. A worker
+refreshes the durable lease while it owns `PROCESSING`; once the lease is stale,
+another worker may recover the delivery. The normal outbound request timeout is
+configured separately with `DELIVERY_TIMEOUT_MS`.
 
 ### Running without Docker
 
