@@ -298,3 +298,46 @@ the API test suite and TypeScript build, and builds the React dashboard.
 - A `deliveries.stats` endpoint (success rate, p95 latency per subscription) for
   the dashboard.
 - A webhook payload schema registry so publishers can validate event contracts.
+
+
+## Integration tests
+
+`cd api && npm test` runs the fast unit suite without external services.
+`npm run test:integration` separately exercises real PostgreSQL migrations and
+constraints, Redis/BullMQ jobs, the Express API, delivery worker, and a real HTTP
+receiver. CI runs both suites and fails on either failure.
+
+For a local run, from the repository root:
+
+```bash
+docker compose -f compose.integration.yml up -d --wait
+cd api
+export INTEGRATION_DATABASE_URL="postgresql://relay:relay@127.0.0.1:55432/relay_test"
+export INTEGRATION_REDIS_URL="redis://127.0.0.1:56379/15"
+npm ci
+npm run prisma:generate
+DATABASE_URL="$INTEGRATION_DATABASE_URL" npm run prisma:deploy
+npm run test:integration
+cd ..
+docker compose -f compose.integration.yml down
+```
+
+The test stack uses separate ports and ephemeral storage, so it does not reuse
+or modify the demo stack. Use dedicated test services: the suite clears the
+`webhook-deliveries` queue in Redis database 15 before starting and deletes its
+own generated tenant after draining. Configuration requires a database name
+ending in `_test` and Redis database `/15` to catch accidental default URLs.
+
+Coverage includes concurrent idempotent publishing, signed delivery and replay
+history, rejection of conflicting idempotency keys, stale queue jobs, repair of
+missing queue projections, HTTP failure/retry, concurrent stale-claim recovery,
+exhausted recovery without subscriber penalties, lease refresh, and draining an
+active HTTP request during shutdown.
+
+The test harness permits only its own ephemeral loopback receiver origin through
+an in-memory replacement of outbound destination validation. No production
+allowlist or SSRF rules are relaxed. All HTTP transport, signature handling,
+database and queue operations are real. Destination security is tested separately
+in the unit suite. Abandoned claims are seeded in PostgreSQL rather than created
+by killing a worker process; these tests do not claim to cover OS-level signal
+forwarding, Docker crash behavior, or the browser UI.

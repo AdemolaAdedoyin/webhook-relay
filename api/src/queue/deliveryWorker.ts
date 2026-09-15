@@ -305,7 +305,7 @@ const stopMaintenance = startMaintenanceLoop(
 );
 
 let shuttingDown = false;
-async function shutdown(signal: string) {
+export async function shutdown(signal: string) {
   if (shuttingDown) return;
   shuttingDown = true;
   logger.info({ signal }, "delivery worker shutting down; waiting for active jobs");
