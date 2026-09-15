@@ -7,7 +7,7 @@ KEY_FILE="$ROOT_DIR/.relay-api-key"
 cd "$ROOT_DIR"
 
 echo "Starting Relay with Docker Compose..."
-docker compose up --build -d
+docker compose up --build -d --wait --wait-timeout 120
 
 if [[ -f "$KEY_FILE" ]]; then
   API_KEY="$(tr -d '\r\n' < "$KEY_FILE")"
@@ -27,8 +27,8 @@ DEMO_API_KEY="$API_KEY" docker compose --profile tools run --rm seed >/dev/null
 
 echo
 echo "Relay is ready:"
-echo "  Dashboard: http://localhost:5173"
-echo "  API:       http://localhost:3000"
+echo "  Dashboard: http://localhost:${WEB_PORT:-5173}"
+echo "  API:       http://localhost:${API_PORT:-3000}"
 echo
 echo "Demo tenant API key:"
 echo "  $API_KEY"

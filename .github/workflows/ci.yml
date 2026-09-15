@@ -88,3 +88,18 @@ jobs:
       - name: Build web
         working-directory: web
         run: npm run build
+
+  containers:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and start local containers
+        run: docker compose up --build -d --wait --wait-timeout 180
+      - name: Check readiness, non-root users and dashboard routes
+        run: bash scripts/check-local.sh
+      - name: Container logs on failure
+        if: failure()
+        run: docker compose logs --tail=100
+      - name: Stop disposable CI stack
+        if: always()
+        run: docker compose down -v

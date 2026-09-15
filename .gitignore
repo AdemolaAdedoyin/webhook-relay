@@ -6,3 +6,4 @@ dist/
 coverage/
 .relay-api-key
 *.tsbuildinfo
+backups/
