@@ -43,5 +43,7 @@ RUN npm prune --omit=dev
 COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=builder /app/dist ./dist
 
+USER node
+
 EXPOSE 3000
 CMD ["node", "dist/index.js"]

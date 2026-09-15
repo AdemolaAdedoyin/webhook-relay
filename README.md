@@ -8,6 +8,13 @@ kind of infrastructure behind Stripe/GitHub-style webhooks.
 **Stack:** Node.js, TypeScript, Express, PostgreSQL (Prisma), Redis + BullMQ,
 React (Vite) dashboard.
 
+## Walkthrough and readiness
+
+Start with the [local walkthrough](docs/LOCAL-WALKTHROUGH.md) for a guided demo.
+[Deployment preparation](docs/DEPLOYMENT-PREPARATION.md) records what is hardened
+and what remains before public hosting. No production deployment is configured.
+Run `bash scripts/check-local.sh` after startup for read-only readiness checks.
+
 ## Why this exists
 
 Most CRUD demos don't say much about how someone handles distributed systems
@@ -144,6 +151,10 @@ The script:
 3. creates or refreshes a reusable `Demo Tenant`;
 4. generates a local `wr_...` API key on first run, stores it in the gitignored
    `.relay-api-key` file, and prints it each time you start the project.
+
+Docker Compose v2 with `up --wait` support, Bash and OpenSSL are required.
+Startup waits for API/dashboard health. Local ports bind only to 127.0.0.1;
+PostgreSQL and Redis data persist in named volumes.
 
 After startup:
 
@@ -394,9 +405,9 @@ surface.
 
 ## Remaining roadmap
 
-After phase 11 (dashboard polish):
-12. Production runtime and deployment.
-13. Final documentation and portfolio walkthrough.
+Phases 12 and 13 are combined as local container readiness and documentation.
+Live production deployment is intentionally deferred.
+
 14. Final full audit and documented deferrals.
 
 ## Per-subscription throughput
