@@ -44,6 +44,9 @@ model Subscription {
   eventTypes    String[] // e.g. ["order.created", "order.refunded"]; empty = all events
   secret        String // used to HMAC-sign outgoing payloads; shown once on creation
   status        SubscriptionStatus @default(ACTIVE)
+  maxConcurrentDeliveries Int      @default(2)
+  minDeliveryIntervalMs Int        @default(0)
+  nextDeliveryAllowedAt DateTime?
   consecutiveFailures Int          @default(0)
   createdAt     DateTime           @default(now())
   updatedAt     DateTime           @updatedAt

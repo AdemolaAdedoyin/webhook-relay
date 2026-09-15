@@ -23,6 +23,7 @@ import { createApp } from "../src/app";
 import { deliveryQueue, enqueueDelivery } from "../src/queue/deliveryQueue";
 import { reconcilePendingDeliveries } from "../src/queue/reconcile";
 import { recoverStaleProcessingDeliveries } from "../src/queue/processingRecovery";
+import { admitDeliveryAttempt } from "../src/queue/subscriptionThroughput";
 import { verifySignature } from "../src/lib/signature";
 
 const apiKey = `integration-${randomUUID()}`;
@@ -37,6 +38,10 @@ let worker: typeof import("../src/queue/deliveryWorker");
 let responseStatus = 200;
 let releaseResponse: (() => void) | undefined;
 let holdResponse = false;
+let holdSlow = false;
+let slowActive = 0;
+let slowPeak = 0;
+const slowReleases: Array<() => void> = [];
 const oldSignals = { SIGTERM: process.listeners("SIGTERM"), SIGINT: process.listeners("SIGINT") };
 
 async function listen(server: Server) {
@@ -105,12 +110,16 @@ beforeAll(async () => {
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(Buffer.from(chunk));
     receipts.push({ body: Buffer.concat(chunks).toString(), headers: req.headers });
+    const isSlow = req.url === "/slow";
+    if (isSlow) { slowActive++; slowPeak = Math.max(slowPeak, slowActive); }
     const finish = () => {
       if (res.writableEnded) return;
+      if (isSlow) slowActive--;
       res.writeHead(responseStatus);
       res.end("receiver response");
     };
-    if (holdResponse) releaseResponse = finish;
+    if (isSlow && holdSlow) slowReleases.push(finish);
+    else if (holdResponse) releaseResponse = finish;
     else finish();
   });
   receiver.origin = await listen(sink);
@@ -126,6 +135,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   holdResponse = false;
+  slowReleases.forEach((release) => release());
   releaseResponse?.();
   await close(api);
   if (worker) await worker.shutdown("integration teardown");
@@ -251,6 +261,104 @@ describe("real delivery pipeline", () => {
     await settled(row.id, "FAILED");
     expect(receipts.length).toBe(before);
     expect((await prisma.subscription.findUniqueOrThrow({ where: { id: subscriptionId } })).consecutiveFailures).toBe(0);
+  });
+
+  it("enforces distributed concurrency and rate admission without consuming deferred attempts", async () => {
+    await worker.deliveryWorker.pause();
+    const sub = await prisma.subscription.create({ data: {
+      tenantId, targetUrl: `${receiver.origin}/admission`, eventTypes: ["admission"], secret,
+      maxConcurrentDeliveries: 1, minDeliveryIntervalMs: 0,
+    } });
+    try {
+      const event = await prisma.event.create({ data: { tenantId, type: "admission", payload: {} } });
+      const rows = await Promise.all(Array.from({ length: 4 }, () => prisma.delivery.create({ data: { eventId: event.id, subscriptionId: sub.id } })));
+      const results = await Promise.all(rows.map((row) => admitDeliveryAttempt(sub.id, row.id, 1, 1)));
+      expect(results.filter((r) => r.status === "claimed")).toHaveLength(1);
+      expect(results.filter((r) => r.status === "deferred")).toHaveLength(3);
+      expect(await prisma.delivery.count({ where: { subscriptionId: sub.id, status: "PROCESSING" } })).toBe(1);
+      const deferred = await prisma.delivery.findFirstOrThrow({ where: { subscriptionId: sub.id, status: "PENDING" } });
+      expect(deferred.attemptCount).toBe(0);
+      expect(await prisma.deliveryAttempt.count({ where: { deliveryId: deferred.id } })).toBe(0);
+      // Test rate admission separately with spare concurrency and fresh rows.
+      await prisma.delivery.updateMany({ where: { subscriptionId: sub.id, status: "PROCESSING" }, data: { status: "SUCCEEDED" } });
+      await prisma.subscription.update({ where: { id: sub.id }, data: { maxConcurrentDeliveries: 10, minDeliveryIntervalMs: 10_000 } });
+      const fresh = await Promise.all(Array.from({ length: 2 }, () => prisma.delivery.create({ data: { eventId: event.id, subscriptionId: sub.id } })));
+      expect((await admitDeliveryAttempt(sub.id, fresh[0]!.id, 1, 1)).status).toBe("claimed");
+      // Plenty of concurrent capacity and no prior nextAttemptAt on this row:
+      // only the shared rate gate can defer it.
+      const rate = await admitDeliveryAttempt(sub.id, fresh[1]!.id, 1, 1);
+      expect(rate.status).toBe("deferred");
+      expect((await prisma.delivery.findUniqueOrThrow({ where: { id: fresh[1]!.id } })).attemptCount).toBe(0);
+    } finally {
+      await prisma.subscription.delete({ where: { id: sub.id } });
+      await worker.deliveryWorker.resume();
+    }
+  });
+
+  it("lets another subscriber progress while a capped subscriber waits and preserves retry budgets", async () => {
+    const slow = await prisma.subscription.create({ data: {
+      tenantId, targetUrl: `${receiver.origin}/slow`, eventTypes: ["throttle.slow"], secret,
+      maxConcurrentDeliveries: 1, minDeliveryIntervalMs: 300,
+    } });
+    const fast = await prisma.subscription.create({ data: {
+      tenantId, targetUrl: `${receiver.origin}/fast`, eventTypes: ["throttle.fast"], secret,
+    } });
+    holdSlow = true;
+    slowPeak = 0;
+    try {
+      const responses = await Promise.all(Array.from({ length: 3 }, (_, i) => request("/events", { type: "throttle.slow", payload: { i } })));
+      expect(responses.every((r) => r.status === 202)).toBe(true);
+      await Promise.all(responses.map((r) => r.json()));
+      await waitUntil(async () => slowReleases.length > 0);
+      await waitUntil(async () => (await prisma.delivery.count({ where: { subscriptionId: slow.id, status: "PENDING", nextAttemptAt: { not: null } } })) === 2);
+      const pending = await prisma.delivery.findMany({ where: { subscriptionId: slow.id, status: "PENDING" } });
+      expect(pending.map((d) => d.attemptCount)).toEqual([0, 0]);
+      const quick = await request("/events", { type: "throttle.fast", payload: {} });
+      expect(quick.status).toBe(202);
+      await quick.json();
+      await waitUntil(async () => (await prisma.delivery.count({ where: { subscriptionId: fast.id, status: "SUCCEEDED" } })) === 1);
+      expect(slowActive).toBe(1);
+      holdSlow = false;
+      slowReleases.forEach((release) => release());
+      const rows = await prisma.delivery.findMany({ where: { subscriptionId: slow.id } });
+      const completed = await Promise.all(rows.map((r) => settled(r.id)));
+      expect(slowPeak).toBe(1);
+      expect(completed.map((d) => d.attemptCount)).toEqual([1, 1, 1]);
+      expect(completed.every((d) => d.attempts.length === 1)).toBe(true);
+      const starts = completed.map((d) => d.lastAttemptAt!.getTime()).sort((a, b) => a - b);
+      expect(starts[1]! - starts[0]!).toBeGreaterThanOrEqual(300);
+      expect(starts[2]! - starts[1]!).toBeGreaterThanOrEqual(300);
+    } finally {
+      holdSlow = false;
+      slowReleases.forEach((release) => release());
+      await prisma.subscription.deleteMany({ where: { id: { in: [slow.id, fast.id] } } });
+    }
+  });
+
+  it("validates throughput updates and refuses another tenant's subscription", async () => {
+    async function patch(id: string, body: unknown) {
+      return fetch(`${apiOrigin}/v1/subscriptions/${id}/limits`, {
+        method: "PATCH", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    }
+    for (const invalid of [{}, { maxConcurrentDeliveries: 0 }, { minDeliveryIntervalMs: -1 }, { maxConcurrentDeliveries: 1.5 }]) {
+      expect((await patch(subscriptionId, invalid)).status).toBe(422);
+    }
+    const updated = await patch(subscriptionId, { maxConcurrentDeliveries: 3, minDeliveryIntervalMs: 0 });
+    expect(updated.status).toBe(200);
+    const body = await updated.json();
+    expect(body.maxConcurrentDeliveries).toBe(3);
+    expect(body.secret).toBeUndefined();
+    expect(body.nextDeliveryAllowedAt).toBeUndefined();
+    const other = await prisma.tenant.create({ data: {
+      name: "limits other", apiKeyHash: randomUUID(),
+      subscriptions: { create: { targetUrl: "https://example.com", secret, eventTypes: [] } },
+    }, include: { subscriptions: true } });
+    try {
+      expect((await patch(other.subscriptions[0]!.id, { maxConcurrentDeliveries: 5 })).status).toBe(404);
+      expect((await prisma.subscription.findUniqueOrThrow({ where: { id: other.subscriptions[0]!.id } })).maxConcurrentDeliveries).toBe(2);
+    } finally { await prisma.tenant.delete({ where: { id: other.id } }); }
   });
 
   it("refreshes an active lease and drains an in-flight HTTP request on shutdown", async () => {
