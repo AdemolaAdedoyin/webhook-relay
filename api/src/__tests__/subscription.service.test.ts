@@ -10,7 +10,7 @@ vi.mock("../db", () => {
     prisma: {
       subscription: {
         create: vi.fn(async ({ data }: any) => {
-          const id = `sub_${++counter}`;
+          const id = data.id ?? `sub_${++counter}`;
           const record = { id, status: "ACTIVE", consecutiveFailures: 0, createdAt: new Date(), ...data };
           subscriptions.set(id, record);
           return record;

@@ -17,7 +17,8 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy",
     "seed": "tsx src/scripts/seed.ts",
-    "test:integration": "vitest run --config vitest.integration.config.ts"
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "secrets:encrypt": "tsx src/scripts/encrypt-secrets.ts"
   },
   "dependencies": {
     "@prisma/client": "^5.19.1",

@@ -31,6 +31,7 @@ model Tenant {
   name          String
   apiKeyHash    String         @unique // sha256 of the tenant's API key, never store plaintext
   createdAt     DateTime       @default(now())
+  apiKeys       ApiKey[]
   subscriptions Subscription[]
   events        Event[]
 }
@@ -42,7 +43,9 @@ model Subscription {
   targetUrl     String
   description   String?
   eventTypes    String[] // e.g. ["order.created", "order.refunded"]; empty = all events
-  secret        String // used to HMAC-sign outgoing payloads; shown once on creation
+  secret        String // encrypted in production; returned only on creation/rotation
+  previousSecret String?
+  previousSecretExpiresAt DateTime?
   status        SubscriptionStatus @default(ACTIVE)
   maxConcurrentDeliveries Int      @default(2)
   minDeliveryIntervalMs Int        @default(0)
@@ -109,4 +112,17 @@ model DeliveryAttempt {
 
   @@unique([deliveryId, runNumber, attemptNumber])
   @@index([deliveryId, requestedAt])
+}
+
+model ApiKey {
+  id String @id @default(cuid())
+  tenantId String
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name String
+  keyHash String @unique
+  scopes String[]
+  createdAt DateTime @default(now())
+  expiresAt DateTime?
+  revokedAt DateTime?
+  @@index([tenantId, createdAt])
 }

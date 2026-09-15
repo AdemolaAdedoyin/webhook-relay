@@ -3,6 +3,7 @@ import { prisma } from "../db";
 import { config } from "../config";
 import { logger } from "../lib/logger";
 import { assertSafeWebhookUrl, readResponseSnippet } from "../lib/network";
+import { revealSecret } from "../lib/secretEncryption";
 import { signPayload } from "../lib/signature";
 import { redisConnection } from "./connection";
 import {
@@ -111,7 +112,12 @@ async function processDelivery(job: Job<DeliveryJobData>, token?: string) {
       createdAt: delivery.event.createdAt,
       data: delivery.event.payload,
     });
-    const signature = signPayload(rawBody, delivery.subscription.secret);
+    const timestamp = Date.now();
+    let signature = signPayload(rawBody, revealSecret(delivery.subscription.secret, delivery.subscriptionId), timestamp);
+    if (delivery.subscription.previousSecret && delivery.subscription.previousSecretExpiresAt && delivery.subscription.previousSecretExpiresAt.getTime() > timestamp) {
+      const previous = signPayload(rawBody, revealSecret(delivery.subscription.previousSecret, delivery.subscriptionId), timestamp);
+      signature += `,${previous.split(",")[1]}`;
+    }
 
     const startedAt = Date.now();
     let responseStatus: number | null = null;

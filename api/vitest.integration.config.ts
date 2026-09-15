@@ -18,6 +18,7 @@ export default defineConfig({
       REDIS_URL: redis,
       NODE_ENV: "test",
       LOG_LEVEL: "silent",
+      SIGNING_SECRET_KEY: "ab".repeat(32),
       DELIVERY_PROCESSING_HEARTBEAT_MS: "250",
       DELIVERY_PROCESSING_STALE_MS: "2000",
     },

@@ -28,18 +28,14 @@ export function verifySignature(
   signatureHeader: string,
   toleranceMs = 5 * 60 * 1000
 ): boolean {
-  const parts = Object.fromEntries(
-    signatureHeader.split(",").map((part) => part.split("=") as [string, string])
-  );
-  const timestamp = Number(parts.t);
-  const providedDigest = parts.v1;
-  if (!timestamp || !providedDigest) return false;
-  if (Math.abs(Date.now() - timestamp) > toleranceMs) return false;
-
-  const expectedDigest = createHmac("sha256", secret).update(`${timestamp}.${rawBody}`).digest("hex");
-
-  const expected = Buffer.from(expectedDigest, "hex");
-  const provided = Buffer.from(providedDigest, "hex");
-  if (expected.length !== provided.length) return false;
-  return timingSafeEqual(expected, provided);
+  const parts = signatureHeader.split(",");
+  const timestamps = parts.filter((part) => part.startsWith("t="));
+  if (timestamps.length !== 1) return false;
+  const timestamp = Number(timestamps[0]!.slice(2));
+  if (!Number.isFinite(timestamp) || !timestamp || Math.abs(Date.now() - timestamp) > toleranceMs) return false;
+  const expected = createHmac("sha256", secret).update(`${timestamp}.${rawBody}`).digest();
+  return parts.filter((part) => part.startsWith("v1=")).some((part) => {
+    const digest = part.slice(3);
+    return /^[0-9a-f]{64}$/i.test(digest) && timingSafeEqual(expected, Buffer.from(digest, "hex"));
+  });
 }

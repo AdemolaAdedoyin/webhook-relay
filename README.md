@@ -394,9 +394,8 @@ surface.
 
 ## Remaining roadmap
 
-After phase 9 (per-subscription throughput):
+After phase 10 (auth and signing secrets):
 
-10. Authentication and signing-secret hardening/rotation.
 11. Dashboard polish and failure visibility.
 12. Production runtime and deployment.
 13. Final documentation and portfolio walkthrough.
@@ -453,3 +452,98 @@ replicas before enabling new ones. Older worker code does not enforce these
 controls. Existing subscriptions receive the default cap of two and no pacing.
 The dashboard can read these fields through subscription APIs; editing controls
 in the dashboard is reserved for the dashboard-polish phase.
+
+## API-key lifecycle and scopes
+
+Existing tenant keys are migrated into the new `ApiKey` table as admin keys, so
+existing dashboard connections continue working after migrations. Authentication
+now consults only `ApiKey` records: changing the historical `Tenant.apiKeyHash`
+field does not bypass revocation. The demo seeder creates/refreshes an admin key;
+run it only for local bootstrap or deliberate recovery. It may reactivate its
+supplied demo key and does not revoke other keys.
+
+| Scope | Access |
+| --- | --- |
+| `admin` | All endpoints, including issuing/listing/revoking API keys. |
+| `read` | Read subscriptions, events, deliveries, operations and metrics. |
+| `publish` | Publish events. |
+| `manage_subscriptions` | Create/change/delete subscriptions and rotate signing secrets. |
+| `replay` | Replay deliveries. |
+
+Scopes are combined explicitly (for example `read` + `publish`). `admin` can
+issue other admin keys; narrower keys cannot issue credentials or elevate their
+permissions. Bearer tokens are hashed with SHA-256 at rest, checked for expiry and
+revocation on every request, and returned only once on creation. In-flight API
+requests already authorized before revocation may finish.
+
+```bash
+curl -X POST http://localhost:3000/v1/keys \
+  -H "Authorization: Bearer $RELAY_API_KEY" -H "Content-Type: application/json" \
+  -d '{"name":"event producer","scopes":["publish"]}'
+# Optional expiresAt: a future ISO-8601 UTC timestamp.
+curl http://localhost:3000/v1/keys -H "Authorization: Bearer $RELAY_API_KEY"
+curl -X DELETE "http://localhost:3000/v1/keys/$KEY_ID" \
+  -H "Authorization: Bearer $RELAY_API_KEY"
+```
+
+Create and verify a replacement before revoking an old key. Self-revocation is
+allowed; revoking the last admin key requires operator recovery. Key lists are
+limited to the latest 200 records and never expose tokens/hashes. Authenticated
+requests without a required scope receive 403; invalid/expired/revoked credentials
+receive 401. Use TLS for all non-local API traffic.
+
+## Signing-secret encryption and rotation
+
+Production requires `SIGNING_SECRET_KEY`, a 64-character hex encoding of 32 random
+bytes, shared by API and worker processes. For example, generate it with
+`openssl rand -hex 32` and store it in your deployment secret manager, outside the
+repository and database. Keep a recoverable backup: losing it makes stored signing
+secrets unreadable. Development supports plaintext when no key is configured;
+setting the key enables encryption locally too. Local Compose forwards the
+variable to API, worker and tooling services.
+
+New/rotated secrets use AES-256-GCM with a random nonce and subscription ID as
+associated data. Ciphertext cannot be moved between subscriptions undetected.
+API reads (including nested event details) expose neither plaintext nor ciphertext
+nor previous keys. Creation and rotation return the new plaintext once.
+
+For existing production data: stop API/worker writers, apply migrations, provide
+the encryption key, then run `npm run secrets:encrypt` from the API tooling image
+(or `api/` with its environment configured). It validates existing ciphertext and
+backfills plaintext current/previous secrets in batches without printing secrets.
+Only then start production API/workers with the same key. Production delivery
+rejects plaintext secrets. Back up the database and key before this rollout.
+Changing the encryption key is **not** signing-key rotation: changing it without
+re-encrypting existing ciphertext with the old key makes delivery fail. Automated
+master-key rewrapping/KMS integration is deferred.
+
+```bash
+curl -X POST "http://localhost:3000/v1/subscriptions/$SUBSCRIPTION_ID/rotate-secret" \
+  -H "Authorization: Bearer $RELAY_API_KEY" -H "Content-Type: application/json" \
+  -d '{"graceSeconds":300}'
+```
+
+During the grace period (default 300 seconds, maximum 3600), outgoing headers
+contain the same timestamp with two `v1` signatures: current and previous. A
+receiver should accept **any valid v1 digest** for its configured key, using the
+exact raw body and timestamp tolerance. The exported `verifySignature` supports
+this format. Install the returned new secret at the receiver before grace expires.
+After expiry only the new key signs outgoing requests. A second rotation during
+an active grace window returns 409. Zero grace is immediate cutover.
+
+Already-started attempts can still use their captured old key; allow for the
+request timeout/in-flight window when cutting over. Previous encrypted material
+is not used after expiry and is overwritten at the next rotation; it is not
+immediately erased from backups or stored rows. Existing plaintext backups still
+need the same access protections as before.
+
+## Docker troubleshooting: old checkouts
+
+If API logs mention Alpine/OpenSSL 1.1, or a direct dashboard route returns an
+Nginx 404, check `git log -1` and `git status` first. These fixes require the phase 5
+Dockerfile and Nginx configuration or later. Update the checkout you actually
+build, preserving local edits, then run `docker compose up -d --build`. Current
+images use Debian/OpenSSL for Prisma, a separate migration service, and Nginx's
+SPA fallback. Do not delete database volumes to fix an outdated image. Verify
+`/ready` and `/deliveries` return 200 after the rebuild. Docker contexts now omit
+host node_modules, build output and local environment files.
