@@ -15,6 +15,7 @@ import {
 import { claimDeliveryAttempt } from "./deliveryLifecycle";
 import { recoverStaleProcessingDeliveries, refreshProcessingLease } from "./processingRecovery";
 import { reconcilePendingDeliveries } from "./reconcile";
+import { startMaintenanceLoop } from "./maintenanceLoop";
 
 const MAX_RESPONSE_SNIPPET_BYTES = 2000;
 const RECONCILE_INTERVAL_MS = 30_000;
@@ -297,26 +298,22 @@ async function runRecoveryAndReconciliation() {
   await reconcilePendingDeliveries();
 }
 
-void runRecoveryAndReconciliation().catch((error) => {
-  logger.warn({ err: error }, "initial delivery recovery/reconciliation failed");
-});
-
-const reconcileTimer = setInterval(() => {
-  void runRecoveryAndReconciliation().catch((error) => {
-    logger.warn({ err: error }, "periodic delivery recovery/reconciliation failed");
-  });
-}, RECONCILE_INTERVAL_MS);
-reconcileTimer.unref();
+const stopMaintenance = startMaintenanceLoop(
+  runRecoveryAndReconciliation,
+  RECONCILE_INTERVAL_MS,
+  (error) => logger.warn({ err: error }, "delivery recovery/reconciliation failed")
+);
 
 let shuttingDown = false;
 async function shutdown(signal: string) {
   if (shuttingDown) return;
   shuttingDown = true;
-  clearInterval(reconcileTimer);
   logger.info({ signal }, "delivery worker shutting down; waiting for active jobs");
 
   try {
-    await deliveryWorker.close();
+    // Stop accepting work and drain both active jobs and any maintenance pass
+    // before closing the queue and database they still use.
+    await Promise.all([stopMaintenance(), deliveryWorker.close()]);
     await deliveryQueue.close();
     await redisConnection.quit();
     await prisma.$disconnect();
