@@ -79,6 +79,7 @@ model Delivery {
   attemptCount   Int            @default(0) // attempts consumed in the current run
   maxAttempts    Int            @default(8)
   lastAttemptAt  DateTime?
+  processingHeartbeatAt DateTime?
   nextAttemptAt  DateTime?
   responseStatus Int?
   responseBodySnippet String? // truncated to protect storage
@@ -87,6 +88,7 @@ model Delivery {
   attempts       DeliveryAttempt[]
 
   @@index([subscriptionId, status])
+  @@index([status, processingHeartbeatAt])
   @@index([eventId])
 }
 

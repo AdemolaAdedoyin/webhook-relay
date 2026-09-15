@@ -9,6 +9,7 @@ export async function claimDeliveryAttempt(
   runNumber: number,
   attemptNumber: number
 ): Promise<boolean> {
+  const now = new Date();
   const claimed = await prisma.delivery.updateMany({
     where: {
       id: deliveryId,
@@ -19,8 +20,12 @@ export async function claimDeliveryAttempt(
     data: {
       status: "PROCESSING",
       attemptCount: attemptNumber,
-      lastAttemptAt: new Date(),
+      lastAttemptAt: now,
+      processingHeartbeatAt: now,
       nextAttemptAt: null,
+      responseStatus: null,
+      responseBodySnippet: null,
+      errorMessage: null,
     },
   });
 
