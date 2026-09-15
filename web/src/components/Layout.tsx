@@ -3,6 +3,7 @@ import { useState } from "react";
 import { getApiKey, setApiKey, clearApiKey } from "../api/client";
 
 const navItems = [
+  { to: "/overview", label: "Overview" },
   { to: "/subscriptions", label: "Subscriptions" },
   { to: "/events", label: "Events" },
   { to: "/deliveries", label: "Deliveries" },
@@ -16,8 +17,8 @@ export default function Layout() {
   }
 
   return (
-    <div style={{ display: "flex", height: "100vh" }}>
-      <aside
+    <div className="app-shell">
+      <aside className="sidebar"
         style={{
           width: 220,
           background: "var(--panel)",
@@ -68,7 +69,7 @@ export default function Layout() {
           </button>
         </div>
       </aside>
-      <main style={{ flex: 1, overflow: "auto", padding: "28px 36px" }}>
+      <main className="main-content">
         <Outlet />
       </main>
     </div>
@@ -94,7 +95,7 @@ function ApiKeyGate({ onSubmit }: { onSubmit: (key: string) => void }) {
           onSubmit(value.trim());
         }}
         style={{
-          width: 360,
+          width: "min(360px, calc(100vw - 32px))",
           background: "var(--panel)",
           border: "1px solid var(--border)",
           borderRadius: 6,
@@ -103,11 +104,12 @@ function ApiKeyGate({ onSubmit }: { onSubmit: (key: string) => void }) {
       >
         <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 4 }}>Connect to Relay</div>
         <p style={{ fontSize: 13, color: "var(--text-dim)", marginTop: 0, marginBottom: 18 }}>
-          Enter a tenant API key. Generate one with <code>npm run seed</code> in the API service.
+          Enter an admin or read-enabled API key for your workspace. Your key is kept only for this browser session.
         </p>
         <input
           type="password"
-          placeholder="wr_..."
+          aria-label="API key"
+          placeholder="wr_... or wrk_..."
           value={value}
           onChange={(e) => setValue(e.target.value)}
           style={{ width: "100%", marginBottom: 14 }}

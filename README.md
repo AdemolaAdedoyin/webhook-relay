@@ -394,9 +394,7 @@ surface.
 
 ## Remaining roadmap
 
-After phase 10 (auth and signing secrets):
-
-11. Dashboard polish and failure visibility.
+After phase 11 (dashboard polish):
 12. Production runtime and deployment.
 13. Final documentation and portfolio walkthrough.
 14. Final full audit and documented deferrals.
@@ -547,3 +545,24 @@ images use Debian/OpenSSL for Prisma, a separate migration service, and Nginx's
 SPA fallback. Do not delete database volumes to fix an outdated image. Verify
 `/ready` and `/deliveries` return 200 after the rebuild. Docker contexts now omit
 host node_modules, build output and local environment files.
+
+## Dashboard operations
+
+The Overview page refreshes tenant counts every 10 seconds and links to failed
+deliveries and subscriptions needing attention. Counts cover retained records;
+they do not establish worker liveness. Deliveries refresh every 5 seconds, with
+URL-preserved status, subscription and event filters applied server-side before
+the latest-50 limit. Details refresh every 3 seconds and show payloads, attempt
+history across replay runs, response snippets, errors and next eligible starts.
+
+Replay requires confirmation because the receiver may already have processed
+the event. Subscription controls support throughput limits, pause/resume,
+reactivation and signing-secret rotation with a five-minute grace period. Save
+the new secret at the receiver before that period expires. Deleting a subscription
+removes its deliveries and attempts, while original events remain; pause instead
+to retain history. Errors include request IDs when the API supplies them.
+
+Connect with an admin or read-enabled key; write controls require their respective
+scopes and display permission errors if unavailable. The key remains in browser
+session storage until disconnected. Lists are limited to the latest 50 records;
+full pagination and dashboard key administration remain deferred.

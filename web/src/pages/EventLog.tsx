@@ -10,6 +10,7 @@ export default function EventLog() {
   async function refresh() {
     try {
       setEvents(await api.listEvents());
+      setError(null);
     } catch (err: any) {
       setError(err.message);
     }
@@ -21,11 +22,11 @@ export default function EventLog() {
 
   return (
     <div>
-      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 20 }}>
+      <div className="page-heading">
         <div>
           <h1 style={{ fontSize: 20, fontWeight: 600, margin: 0 }}>Events</h1>
           <p style={{ color: "var(--text-dim)", fontSize: 13, margin: "4px 0 0" }}>
-            Every event published to this tenant, most recent first.
+            Latest 50 events, most recent first. Events remain after a subscription is deleted.
           </p>
         </div>
         <button
@@ -60,6 +61,7 @@ export default function EventLog() {
         </div>
       )}
 
+      <button onClick={refresh}>Refresh events</button>
       {showForm && (
         <PublishForm
           onCancel={() => setShowForm(false)}
@@ -72,7 +74,7 @@ export default function EventLog() {
       )}
 
       {events === null ? (
-        <p style={{ color: "var(--text-faint)" }}>Loading…</p>
+        <p style={{ color: "var(--text-dim)" }}>{error ? "Unable to load events. Try Refresh events." : "Loading…"}</p>
       ) : events.length === 0 ? (
         <div
           style={{
@@ -86,7 +88,7 @@ export default function EventLog() {
           No events published yet.
         </div>
       ) : (
-        <table>
+        <div className="table-scroll"><table>
           <thead>
             <tr>
               <th>Type</th>
@@ -109,7 +111,7 @@ export default function EventLog() {
               </tr>
             ))}
           </tbody>
-        </table>
+        </table></div>
       )}
     </div>
   );

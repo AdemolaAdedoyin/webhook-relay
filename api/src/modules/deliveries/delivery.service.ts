@@ -6,10 +6,11 @@ import { enqueueDelivery } from "../../queue/deliveryQueue";
 
 export async function listDeliveries(
   tenantId: string,
-  options: { subscriptionId?: string; status?: DeliveryStatus; limit: number }
+  options: { subscriptionId?: string; eventId?: string; status?: DeliveryStatus; limit: number }
 ) {
   return prisma.delivery.findMany({
     where: {
+      ...(options.eventId ? { eventId: options.eventId } : {}),
       ...(options.status ? { status: options.status } : {}),
       subscription: {
         tenantId,

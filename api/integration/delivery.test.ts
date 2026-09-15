@@ -421,6 +421,20 @@ describe("real delivery pipeline", () => {
     expect(verifySignature(last.body, secret, String(last.headers["webhook-signature"]))).toBe(false);
   });
 
+  it("filters old event deliveries in SQL before applying the list limit", async () => {
+    const old = await prisma.event.create({ data: { tenantId, type: "old.filtered", payload: {} } });
+    const target = await prisma.delivery.create({ data: { eventId: old.id, subscriptionId, status: "SUCCEEDED", createdAt: new Date(0) } });
+    const recent = await prisma.event.create({ data: { tenantId, type: "new.filtered", payload: {} } });
+    await prisma.delivery.createMany({ data: Array.from({ length: 55 }, () => ({ eventId: recent.id, subscriptionId, status: "SUCCEEDED" as const })) });
+    const unfiltered = await (await request("/deliveries")).json();
+    expect(unfiltered).toHaveLength(50);
+    expect(unfiltered.some((d: { id: string }) => d.id === target.id)).toBe(false);
+    const filtered = await (await request(`/deliveries?eventId=${old.id}&status=SUCCEEDED`)).json();
+    expect(filtered.map((d: { id: string }) => d.id)).toEqual([target.id]);
+    const differentStatus = await (await request(`/deliveries?eventId=${old.id}&status=FAILED`)).json();
+    expect(differentStatus).toEqual([]);
+  });
+
   it("refreshes an active lease and drains an in-flight HTTP request on shutdown", async () => {
     holdResponse = true;
     const before = receipts.length;
