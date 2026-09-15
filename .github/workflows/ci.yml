@@ -70,6 +70,13 @@ jobs:
         working-directory: api
         run: npm test
 
+      - name: Run PostgreSQL, Redis and HTTP integration tests
+        working-directory: api
+        env:
+          INTEGRATION_DATABASE_URL: postgresql://webhook_relay:webhook_relay@localhost:5432/webhook_relay_test?schema=public
+          INTEGRATION_REDIS_URL: redis://localhost:6379/15
+        run: npm run test:integration
+
       - name: Build API
         working-directory: api
         run: npm run build
