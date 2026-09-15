@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { prisma } from "../db";
 
 /**
@@ -7,10 +8,11 @@ import { prisma } from "../db";
 export async function claimDeliveryAttempt(
   deliveryId: string,
   runNumber: number,
-  attemptNumber: number
+  attemptNumber: number,
+  client: Pick<Prisma.TransactionClient, "delivery"> = prisma,
+  now = new Date()
 ): Promise<boolean> {
-  const now = new Date();
-  const claimed = await prisma.delivery.updateMany({
+  const claimed = await client.delivery.updateMany({
     where: {
       id: deliveryId,
       runNumber,

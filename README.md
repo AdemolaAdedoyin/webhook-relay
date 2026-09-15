@@ -394,11 +394,62 @@ surface.
 
 ## Remaining roadmap
 
-After phase 8 (observability):
+After phase 9 (per-subscription throughput):
 
-9. Per-subscription throughput controls and fair delivery.
 10. Authentication and signing-secret hardening/rotation.
 11. Dashboard polish and failure visibility.
 12. Production runtime and deployment.
 13. Final documentation and portfolio walkthrough.
 14. Final full audit and documented deferrals.
+
+## Per-subscription throughput
+
+Each subscription now has two controls, accepted on creation or updated through
+`PATCH /v1/subscriptions/:id/limits` with its tenant bearer key:
+
+| Field | Default | Allowed range | Meaning |
+| --- | --- | --- | --- |
+| `maxConcurrentDeliveries` | 2 | 1–100 | Maximum durable `PROCESSING` deliveries across all worker replicas. |
+| `minDeliveryIntervalMs` | 0 | 0–3,600,000 | Minimum spacing between admitted attempt starts; zero disables pacing. |
+
+```bash
+curl -X PATCH "http://localhost:3000/v1/subscriptions/$SUBSCRIPTION_ID/limits" \
+  -H "Authorization: Bearer $RELAY_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"maxConcurrentDeliveries":2,"minDeliveryIntervalMs":500}'
+```
+
+A 500 ms interval admits at most two starts per second without a burst bucket.
+This spaces **admission**, not receiver arrival times (DNS/network delays can
+vary). The existing `DELIVERY_CONCURRENCY` remains a per-worker global ceiling;
+subscription limits are shared across replicas. API validation and database
+constraints enforce the ranges. Omitted update fields retain their values, and
+empty/unknown-field patches are rejected. Other tenants cannot update a limit.
+
+Workers lock the subscription row in a short PostgreSQL transaction, check the
+current active count and pacing deadline using the database clock, and claim the
+durable attempt before releasing the lock. Only a successful claim advances the
+pacing deadline. The same admission applies to initial sends, retries and replay.
+There is no separate Redis semaphore to lose during a Redis restart.
+
+When capacity is unavailable, the worker persists `nextAttemptAt` and moves the
+BullMQ job to delayed state, releasing its worker slot. `attemptCount`, run number,
+and historical attempts remain unchanged. Concurrency waits are revisited after
+about one second; pacing and retry deadlines are also honored. If that queue
+transition fails, normal reconciliation repairs the durable intent. This permits
+other subscriptions to progress while one endpoint is slow or capped; it is
+best-effort fairness, not strict round-robin ordering or a latency SLA under an
+arbitrarily large backlog.
+
+Lowering limits does not cancel active HTTP requests. Existing pacing deadlines
+and delayed jobs may still apply until their next check. Stale `PROCESSING` rows
+occupy capacity until lease recovery releases them. As elsewhere in Relay,
+recovery is at-least-once: an old process whose lease was recovered can still have
+an uncertain external HTTP outcome. Durable concurrency limits are not an
+exactly-once network guarantee.
+
+Rollout: apply migrations before starting the new API/worker, and drain old worker
+replicas before enabling new ones. Older worker code does not enforce these
+controls. Existing subscriptions receive the default cap of two and no pacing.
+The dashboard can read these fields through subscription APIs; editing controls
+in the dashboard is reserved for the dashboard-polish phase.

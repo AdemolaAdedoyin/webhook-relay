@@ -8,6 +8,8 @@ export interface CreateSubscriptionInput {
   targetUrl: string;
   description?: string;
   eventTypes: string[];
+  maxConcurrentDeliveries?: number;
+  minDeliveryIntervalMs?: number;
 }
 
 export async function createSubscription(input: CreateSubscriptionInput) {
@@ -27,12 +29,15 @@ export async function createSubscription(input: CreateSubscriptionInput) {
       targetUrl,
       eventTypes: input.eventTypes,
       secret,
+      maxConcurrentDeliveries: input.maxConcurrentDeliveries ?? 2,
+      minDeliveryIntervalMs: input.minDeliveryIntervalMs ?? 0,
       ...(input.description ? { description: input.description } : {}),
     },
   });
   // The secret is only ever returned in full at creation time; subsequent
   // reads redact it (see toPublicSubscription) so it can't leak via list/get.
-  return subscription;
+  const { nextDeliveryAllowedAt: _admissionClock, ...created } = subscription;
+  return created;
 }
 
 export async function listSubscriptions(tenantId: string) {
@@ -70,7 +75,16 @@ export async function deleteSubscription(tenantId: string, id: string) {
   await prisma.subscription.delete({ where: { id } });
 }
 
-function toPublicSubscription<T extends { secret: string }>(sub: T) {
-  const { secret, ...rest } = sub;
+function toPublicSubscription<T extends { secret: string; nextDeliveryAllowedAt?: Date | null }>(sub: T) {
+  const { secret, nextDeliveryAllowedAt: _admissionClock, ...rest } = sub;
   return { ...rest, secretPreview: `${secret.slice(0, 10)}${"*".repeat(8)}` };
+}
+
+export async function updateSubscriptionLimits(
+  tenantId: string, id: string,
+  limits: { maxConcurrentDeliveries?: number; minDeliveryIntervalMs?: number }
+) {
+  const updated = await prisma.subscription.updateMany({ where: { id, tenantId }, data: limits });
+  if (updated.count !== 1) throw new NotFoundError("Subscription", id);
+  return getSubscription(tenantId, id);
 }

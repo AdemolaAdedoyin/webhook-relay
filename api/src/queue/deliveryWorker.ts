@@ -1,4 +1,4 @@
-import { Worker, Job } from "bullmq";
+import { Worker, Job, DelayedError } from "bullmq";
 import { prisma } from "../db";
 import { config } from "../config";
 import { logger } from "../lib/logger";
@@ -12,7 +12,7 @@ import {
   deliveryQueue,
   enqueueDelivery,
 } from "./deliveryQueue";
-import { claimDeliveryAttempt } from "./deliveryLifecycle";
+import { admitDeliveryAttempt } from "./subscriptionThroughput";
 import { recoverStaleProcessingDeliveries, refreshProcessingLease } from "./processingRecovery";
 import { reconcilePendingDeliveries } from "./reconcile";
 import { startMaintenanceLoop } from "./maintenanceLoop";
@@ -38,7 +38,7 @@ function startLeaseRefresh(deliveryId: string, runNumber: number, attemptNumber:
  * any network side effect so duplicate BullMQ projections/workers cannot send
  * the same run/attempt concurrently.
  */
-async function processDelivery(job: Job<DeliveryJobData>) {
+async function processDelivery(job: Job<DeliveryJobData>, token?: string) {
   const { deliveryId, runNumber, attemptNumber } = job.data;
 
   const delivery = await prisma.delivery.findUnique({
@@ -71,8 +71,14 @@ async function processDelivery(job: Job<DeliveryJobData>) {
     return;
   }
 
-  const claimed = await claimDeliveryAttempt(deliveryId, runNumber, attemptNumber);
-  if (!claimed) {
+  const admission = await admitDeliveryAttempt(delivery.subscriptionId, deliveryId, runNumber, attemptNumber);
+  if (admission.status === "deferred") {
+    // Durable nextAttemptAt was persisted first. If Redis fails here, normal
+    // reconciliation repairs this same run/attempt without consuming a retry.
+    await job.moveToDelayed(admission.retryAt.getTime(), token);
+    throw new DelayedError();
+  }
+  if (admission.status === "skipped") {
     logger.info({ deliveryId, runNumber, attemptNumber }, "delivery attempt was claimed elsewhere");
     return;
   }
