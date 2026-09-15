@@ -341,3 +341,64 @@ database and queue operations are real. Destination security is tested separatel
 in the unit suite. Abandoned claims are seeded in PostgreSQL rather than created
 by killing a worker process; these tests do not claim to cover OS-level signal
 forwarding, Docker crash behavior, or the browser UI.
+
+## Observability
+
+Every API response carries `X-Request-Id`. A supplied ID is accepted only when it
+contains 1–128 letters, digits, dots, underscores or hyphens; otherwise the API
+generates a UUID. The same ID appears in HTTP logs and centralized error
+responses. Access logs omit request headers, query strings and bodies so bearer
+keys, cookies and payloads are not recorded. The ID is exposed to browser clients
+through CORS. It correlates API requests, not subsequent asynchronous deliveries;
+worker logs use delivery ID, run number and attempt number.
+
+| Endpoint | Access | Meaning |
+| --- | --- | --- |
+| `GET /health` | Public | Process liveness; does not query dependencies. |
+| `GET /ready` | Public | PostgreSQL `SELECT 1` and Redis `PING`; 200 when both pass, otherwise 503. |
+| `GET /v1/operations` | Tenant bearer key | Retained event count, subscription/delivery counts by status, and stale processing count. |
+| `GET /v1/operations/metrics` | Tenant bearer key | The same durable counts in Prometheus text exposition format. |
+
+Readiness probes run concurrently with a 1.5-second response deadline per
+request. Redis probes use a separate bounded connection rather than BullMQ's
+retry-forever connection. A stalled database probe is reused until it settles,
+preventing repeated probes from accumulating database work. Readiness reports
+only boolean dependency status, not connection strings or internal errors.
+Liveness/readiness bypass the tenant traffic rate limiter. These endpoints do
+not prove that a separate worker process is running; monitor backlog and stale
+processing counts as well.
+
+Operations reads use one PostgreSQL repeatable-read snapshot scoped to the
+request's tenant. Thus they reflect all worker replicas and remain meaningful
+after an API restart. Metrics are **gauges of retained rows**, not lifetime
+counters: replay changes a delivery's current state and deletion lowers counts.
+Only fixed status enums are used as labels; no payloads, targets, tenant IDs or
+secrets appear in metrics. No global BullMQ queue totals are exposed to tenants.
+
+```bash
+curl http://localhost:3000/ready
+curl http://localhost:3000/v1/operations \
+  -H "Authorization: Bearer $RELAY_API_KEY"
+curl http://localhost:3000/v1/operations/metrics \
+  -H "Authorization: Bearer $RELAY_API_KEY"
+```
+
+Scrape once per tenant with its bearer credential; add a stable tenant identifier
+as a **scraper-side** target label if collecting multiple tenants. Counts require
+database aggregation, so use a moderate scrape interval (for example 30 seconds)
+and avoid high-frequency polling. A growing `RETRYING` backlog suggests receiver
+failures; `relay_stale_processing > 0` indicates expired worker leases pending
+recovery. Inspect delivery details and worker logs before replaying work. This
+phase does not add request-rate histograms or a global administrative metrics
+surface.
+
+## Remaining roadmap
+
+After phase 8 (observability):
+
+9. Per-subscription throughput controls and fair delivery.
+10. Authentication and signing-secret hardening/rotation.
+11. Dashboard polish and failure visibility.
+12. Production runtime and deployment.
+13. Final documentation and portfolio walkthrough.
+14. Final full audit and documented deferrals.

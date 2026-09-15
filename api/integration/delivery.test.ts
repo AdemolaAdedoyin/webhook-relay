@@ -146,6 +146,39 @@ afterAll(async () => {
 });
 
 describe("real delivery pipeline", () => {
+  it("exposes readiness and request correlation while isolating tenant operations", async () => {
+    const ready = await fetch(`${apiOrigin}/ready`, { headers: { "X-Request-Id": "integration-probe" } });
+    expect(ready.status).toBe(200);
+    expect(ready.headers.get("x-request-id")).toBe("integration-probe");
+    expect(await ready.json()).toEqual({ status: "ready", checks: { postgres: true, redis: true } });
+    const invalid = await fetch(`${apiOrigin}/health`, { headers: { "X-Request-Id": "unsafe value" } });
+    expect(invalid.headers.get("x-request-id")).toMatch(/^[0-9a-f-]{36}$/);
+    const unauthorized = await fetch(`${apiOrigin}/v1/operations`);
+    expect(unauthorized.status).toBe(401);
+    expect((await unauthorized.json()).error.requestId).toBe(unauthorized.headers.get("x-request-id"));
+    expect((await fetch(`${apiOrigin}/v1/operations/metrics`)).status).toBe(401);
+    const other = await prisma.tenant.create({ data: {
+      name: "other tenant", apiKeyHash: randomUUID(),
+      events: { create: { type: "private", payload: {} } },
+      subscriptions: { create: { targetUrl: "https://example.com", secret: "private-secret", eventTypes: [] } },
+    }, include: { events: true, subscriptions: true } });
+    try {
+      await prisma.delivery.create({ data: { eventId: other.events[0]!.id, subscriptionId: other.subscriptions[0]!.id, status: "SUCCEEDED" } });
+      const overview = await (await request("/operations")).json();
+      expect(overview.events).toBe(0);
+      expect(overview.subscriptions).toEqual({ ACTIVE: 1, PAUSED: 0, DISABLED: 0 });
+      expect(Object.values(overview.deliveries)).toEqual([0, 0, 0, 0, 0]);
+      expect(overview.staleProcessing).toBe(0);
+      const metrics = await request("/operations/metrics");
+      expect(metrics.headers.get("content-type")).toContain("text/plain");
+      const text = await metrics.text();
+      expect(text).toContain('relay_subscriptions{status="ACTIVE"} 1');
+      expect(text).toContain("relay_events 0\n");
+      expect(text).not.toContain(other.id);
+      expect(text).not.toContain("private-secret");
+    } finally { await prisma.tenant.delete({ where: { id: other.id } }); }
+  });
+
   it("publishes concurrently with one durable fan-out, signs HTTP and preserves replay history", async () => {
     const before = receipts.length;
     const key = randomUUID();
@@ -172,6 +205,9 @@ describe("real delivery pipeline", () => {
     expect(replay.attempts.map((a) => [a.runNumber, a.attemptNumber])).toEqual([[1, 1], [2, 1]]);
     expect(receipts.length - before).toBe(2);
     expect(receipts.at(-1)!.headers["webhook-delivery-run"]).toBe("2");
+    const overview = await (await request("/operations")).json();
+    expect(overview.events).toBe(1);
+    expect(overview.deliveries.SUCCEEDED).toBe(1);
     // Project an old job after replay; it must not send or mutate the newer run.
     await enqueueDelivery(id, 1, 1);
     await settled(id, "SUCCEEDED", 2);
@@ -199,6 +235,7 @@ describe("real delivery pipeline", () => {
   it("recovers abandoned claims once across concurrent recovery passes", async () => {
     const row = await durable("PROCESSING", 1);
     const before = receipts.length;
+    expect((await (await request("/operations")).json()).staleProcessing).toBe(1);
     const passes = await Promise.all([recoverStaleProcessingDeliveries(), recoverStaleProcessingDeliveries()]);
     expect(passes.reduce((n, p) => n + p.recovered, 0)).toBe(1);
     const result = await settled(row.id);
