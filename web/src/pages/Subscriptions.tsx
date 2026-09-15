@@ -4,6 +4,9 @@ import StatusPill from "../components/StatusPill";
 
 export default function Subscriptions() {
   const [subs, setSubs] = useState<Subscription[] | null>(null);
+  const [editing, setEditing] = useState<Subscription | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [revealedSecret, setRevealedSecret] = useState<{ id: string; secret: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -11,6 +14,7 @@ export default function Subscriptions() {
   async function refresh() {
     try {
       setSubs(await api.listSubscriptions());
+      setError(null);
     } catch (err: any) {
       setError(err.message);
     }
@@ -23,25 +27,37 @@ export default function Subscriptions() {
   async function handleCreate(data: { targetUrl: string; description?: string; eventTypes: string[] }) {
     const created = await api.createSubscription(data);
     setRevealedSecret({ id: created.id, secret: created.secret! });
+    setNotice(null);
     setShowForm(false);
     refresh();
   }
 
+  async function action(sub: Subscription, work: () => Promise<unknown>) {
+    setBusy(sub.id); setError(null);
+    try { await work(); await refresh(); }
+    catch (err) { setError(err instanceof Error ? err.message : "Action failed"); }
+    finally { setBusy(null); }
+  }
   async function toggleStatus(sub: Subscription) {
     const next = sub.status === "ACTIVE" ? "PAUSED" : "ACTIVE";
-    await api.updateSubscriptionStatus(sub.id, next);
-    refresh();
+    await action(sub, () => api.updateSubscriptionStatus(sub.id, next));
   }
-
   async function remove(sub: Subscription) {
-    if (!confirm(`Delete the subscription targeting ${sub.targetUrl}? This can't be undone.`)) return;
-    await api.deleteSubscription(sub.id);
-    refresh();
+    if (!confirm(`Delete ${sub.targetUrl}? This permanently deletes its deliveries and attempt history. Original events remain. Use Pause to preserve delivery history.`)) return;
+    await action(sub, async () => { await api.deleteSubscription(sub.id); if (editing?.id === sub.id) setEditing(null); });
+  }
+  async function rotate(sub: Subscription) {
+    if (!confirm("Rotate the signing secret? Save the new secret at your receiver within five minutes. Both keys work during this grace period.")) return;
+    await action(sub, async () => {
+      const result = await api.rotateSecret(sub.id);
+      setRevealedSecret({ id: sub.id, secret: result.secret });
+      setNotice(`Update your receiver before ${new Date(result.previousSecretExpiresAt).toLocaleString()}.`);
+    });
   }
 
   return (
     <div>
-      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 20 }}>
+      <div className="page-heading">
         <div>
           <h1 style={{ fontSize: 20, fontWeight: 600, margin: 0 }}>Subscriptions</h1>
           <p style={{ color: "var(--text-dim)", fontSize: 13, margin: "4px 0 0" }}>
@@ -64,7 +80,11 @@ export default function Subscriptions() {
         </button>
       </div>
 
+      <p className="muted">Pause preserves delivery history. Delete removes the subscription, its deliveries and attempts; original events remain.</p>
       {error && <ErrorBanner message={error} />}
+      <button onClick={refresh} disabled={!!busy}>Refresh subscriptions</button>
+      {editing && <LimitsForm key={editing.id} subscription={editing} onClose={() => setEditing(null)} onSaved={async () => { setEditing(null); await refresh(); }} />}
+
 
       {revealedSecret && (
         <div
@@ -81,6 +101,7 @@ export default function Subscriptions() {
             This is the only time the full secret is shown. Use it to verify the{" "}
             <code>Webhook-Signature</code> header on incoming requests.
           </p>
+          {notice && <p role="status">{notice}</p>}
           <code
             style={{
               display: "block",
@@ -94,7 +115,7 @@ export default function Subscriptions() {
             {revealedSecret.secret}
           </code>
           <button
-            onClick={() => setRevealedSecret(null)}
+            onClick={() => { setRevealedSecret(null); setNotice(null); }}
             style={{
               marginTop: 10,
               background: "none",
@@ -115,17 +136,17 @@ export default function Subscriptions() {
       )}
 
       {subs === null ? (
-        <Loading />
+        error ? <p>Unable to load subscriptions. Try Refresh subscriptions.</p> : <Loading />
       ) : subs.length === 0 ? (
         <EmptyState onCreate={() => setShowForm(true)} />
       ) : (
-        <table>
+        <div className="table-scroll"><table>
           <thead>
             <tr>
               <th>Target</th>
               <th>Event types</th>
               <th>Status</th>
-              <th>Secret</th>
+              <th>Throughput</th>
               <th></th>
             </tr>
           </thead>
@@ -156,16 +177,18 @@ export default function Subscriptions() {
                   )}
                 </td>
                 <td className="mono" style={{ fontSize: 12, color: "var(--text-faint)" }}>
-                  {sub.secretPreview}
+                  {sub.maxConcurrentDeliveries} concurrent<br />{sub.minDeliveryIntervalMs ? `${sub.minDeliveryIntervalMs} ms between starts` : "No pacing"}
                 </td>
                 <td>
-                  <div style={{ display: "flex", gap: 8 }}>
-                    {sub.status !== "DISABLED" && (
-                      <button onClick={() => toggleStatus(sub)} style={linkButtonStyle}>
-                        {sub.status === "ACTIVE" ? "Pause" : "Resume"}
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                    {(
+                      <button disabled={!!busy} onClick={() => toggleStatus(sub)} style={linkButtonStyle}>
+                        {sub.status === "ACTIVE" ? "Pause" : sub.status === "DISABLED" ? "Reactivate" : "Resume"}
                       </button>
                     )}
-                    <button onClick={() => remove(sub)} style={{ ...linkButtonStyle, color: "var(--failure)" }}>
+                    <button disabled={!!busy} onClick={() => setEditing(sub)} style={linkButtonStyle}>Edit limits</button>
+                    <button disabled={!!busy} onClick={() => rotate(sub)} style={linkButtonStyle}>Rotate secret</button>
+                    <button disabled={!!busy} onClick={() => remove(sub)} style={{ ...linkButtonStyle, color: "var(--failure)" }}>
                       Delete
                     </button>
                   </div>
@@ -173,7 +196,7 @@ export default function Subscriptions() {
               </tr>
             ))}
           </tbody>
-        </table>
+        </table></div>
       )}
     </div>
   );
@@ -308,7 +331,7 @@ function Loading() {
 
 function ErrorBanner({ message }: { message: string }) {
   return (
-    <div
+    <div role="alert"
       style={{
         background: "rgba(217,99,77,0.12)",
         border: "1px solid var(--failure)",
@@ -352,4 +375,24 @@ function EmptyState({ onCreate }: { onCreate: () => void }) {
       </button>
     </div>
   );
+}
+
+function LimitsForm({ subscription, onClose, onSaved }: { subscription: Subscription; onClose: () => void; onSaved: () => Promise<void> }) {
+  const [concurrency, setConcurrency] = useState(subscription.maxConcurrentDeliveries);
+  const [interval, setInterval] = useState(subscription.minDeliveryIntervalMs);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  return <form className="panel" onSubmit={async (e) => {
+    e.preventDefault(); setSaving(true); setError(null);
+    try { await api.updateLimits(subscription.id, { maxConcurrentDeliveries: concurrency, minDeliveryIntervalMs: interval }); await onSaved(); }
+    catch (err) { setError(err instanceof Error ? err.message : "Unable to save limits"); }
+    finally { setSaving(false); }
+  }}>
+    <h2>Edit throughput limits</h2><p className="wrap">{subscription.targetUrl}</p>
+    {error && <p role="alert" className="error-banner">{error}</p>}
+    <div className="toolbar"><label>Concurrent deliveries<input type="number" min="1" max="100" step="1" required value={concurrency} onChange={(e) => setConcurrency(Number(e.target.value))} /></label>
+    <label>Minimum interval (ms)<input type="number" min="0" max="3600000" step="1" required value={interval} onChange={(e) => setInterval(Number(e.target.value))} /></label></div>
+    <p className="muted">Limits apply across workers. Zero interval disables pacing. Active requests are not cancelled.</p>
+    <button className="primary" disabled={saving}>{saving ? "Saving…" : "Save limits"}</button> <button type="button" disabled={saving} onClick={onClose}>Cancel</button>
+  </form>;
 }

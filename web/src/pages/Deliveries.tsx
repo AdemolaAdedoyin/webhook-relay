@@ -1,243 +1,74 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useCallback, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { api, DeliveryDetail, DeliverySummary } from "../api/client";
+import { api } from "../api/client";
 import StatusPill from "../components/StatusPill";
+import { useRemote } from "../hooks/useRemote";
 
 export default function Deliveries() {
-  const [params] = useSearchParams();
-  const eventId = params.get("eventId") ?? undefined;
-
-  const [deliveries, setDeliveries] = useState<DeliverySummary[] | null>(null);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-
-  async function refresh() {
-    const all = await api.listDeliveries();
-    setDeliveries(eventId ? all.filter((d) => d.event.id === eventId) : all);
+  const [params, setParams] = useSearchParams();
+  const eventId = params.get("eventId") ?? "";
+  const status = params.get("status") ?? "";
+  const subscriptionId = params.get("subscriptionId") ?? "";
+  const selectedId = params.get("deliveryId");
+  const load = useCallback(() => api.listDeliveries({ ...(eventId ? { eventId } : {}), ...(status ? { status } : {}), ...(subscriptionId ? { subscriptionId } : {}) }), [eventId, status, subscriptionId]);
+  const { data, error, refresh } = useRemote(load, 5000);
+  const subscriptions = useRemote(api.listSubscriptions);
+  function filter(key: string, value: string) {
+    const next = new URLSearchParams(params);
+    if (value) next.set(key, value); else next.delete(key);
+    if (key !== "deliveryId") next.delete("deliveryId");
+    setParams(next);
   }
-
-  useEffect(() => {
-    refresh();
-    const interval = setInterval(refresh, 5000);
-    return () => clearInterval(interval);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [eventId]);
-
-  return (
-    <div style={{ display: "flex", gap: 24 }}>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <h1 style={{ fontSize: 20, fontWeight: 600, margin: 0 }}>Deliveries</h1>
-        <p style={{ color: "var(--text-dim)", fontSize: 13, margin: "4px 0 20px" }}>
-          {eventId ? "Deliveries for the selected event." : "Every delivery attempt across all subscriptions."}
-        </p>
-
-        {deliveries === null ? (
-          <p style={{ color: "var(--text-faint)" }}>Loading…</p>
-        ) : deliveries.length === 0 ? (
-          <div
-            style={{
-              border: "1px dashed var(--border-strong)",
-              borderRadius: 6,
-              padding: 40,
-              textAlign: "center",
-              color: "var(--text-dim)",
-            }}
-          >
-            No deliveries yet.
-          </div>
-        ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>Event</th>
-                <th>Target</th>
-                <th>Status</th>
-                <th>Run</th>
-                <th>Attempts</th>
-                <th>Response</th>
-              </tr>
-            </thead>
-            <tbody>
-              {deliveries.map((d) => (
-                <tr key={d.id} onClick={() => setSelectedId(d.id)} style={{ cursor: "pointer" }}>
-                  <td className="mono">{d.event.type}</td>
-                  <td className="mono" style={{ fontSize: 12, color: "var(--text-dim)" }}>
-                    {new URL(d.subscription.targetUrl).hostname}
-                  </td>
-                  <td>
-                    <StatusPill status={d.status} />
-                  </td>
-                  <td>{d.runNumber}</td>
-                  <td>
-                    {d.attemptCount}/{d.maxAttempts}
-                  </td>
-                  <td style={{ color: d.responseStatus && d.responseStatus >= 300 ? "var(--failure)" : "var(--text-dim)" }}>
-                    {d.responseStatus ?? "—"}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
-
-      {selectedId && (
-        <DeliveryDrawer deliveryId={selectedId} onClose={() => setSelectedId(null)} onReplayed={refresh} />
-      )}
+  return <section>
+    <header className="page-heading"><div><p className="eyebrow">DELIVERY OPERATIONS</p><h1>Deliveries</h1><p>Latest 50 matching deliveries. Updates every 5 seconds.</p></div><button onClick={refresh}>Refresh</button></header>
+    <div className="toolbar">
+      <label>Status<select value={status} onChange={(e) => filter("status", e.target.value)}><option value="">All statuses</option>{["PENDING", "PROCESSING", "RETRYING", "SUCCEEDED", "FAILED"].map((s) => <option key={s}>{s}</option>)}</select></label>
+      <label>Subscription<select value={subscriptionId} onChange={(e) => filter("subscriptionId", e.target.value)}><option value="">All subscriptions</option>{subscriptions.data?.map((s) => <option key={s.id} value={s.id}>{s.description || s.targetUrl}</option>)}</select></label>
+      {eventId && <span className="filter-chip">Event: <code>{eventId}</code> <button aria-label="Clear event filter" onClick={() => filter("eventId", "")}>×</button></span>}
+      {(status || subscriptionId || eventId) && <button onClick={() => setParams({})}>Clear filters</button>}
     </div>
-  );
+    {error && <p role="alert" className="error-banner">{error}</p>}
+    {subscriptions.error && <p role="alert" className="error-banner">Subscription filter unavailable: {subscriptions.error}</p>}
+    <div className="delivery-layout"><div className="table-scroll">
+      {!data ? <p>{error ? "Unable to load deliveries. Try Refresh." : "Loading deliveries…"}</p> : !data.length ? <div className="empty-state">No deliveries match these filters. Deleted subscriptions lose delivery history; their original events remain.</div> : <table><thead><tr><th>Event / target</th><th>Status</th><th>Run / attempts</th><th>Latest result</th></tr></thead><tbody>
+        {data.map((d) => <tr key={d.id} className={selectedId === d.id ? "selected-row" : ""}>
+          <td><button className="text-button" onClick={() => filter("deliveryId", d.id)}>{d.event.type}</button><div className="muted truncate" title={d.subscription.targetUrl}>{d.subscription.targetUrl}</div></td>
+          <td><StatusPill status={d.status} />{d.nextAttemptAt && <div className="muted">Eligible {new Date(d.nextAttemptAt).toLocaleTimeString()}</div>}</td>
+          <td>Run {d.runNumber}<div className="muted">{d.attemptCount} / {d.maxAttempts} attempts</div></td>
+          <td><div className={d.errorMessage ? "failure-text" : "muted"}>{d.errorMessage || (d.responseStatus ? `HTTP ${d.responseStatus}` : "Awaiting attempt")}</div></td>
+        </tr>)}
+      </tbody></table>}
+    </div>{selectedId && <DeliveryDrawer key={selectedId} id={selectedId} onClose={() => filter("deliveryId", "")} onReplayed={refresh} />}</div>
+  </section>;
 }
 
-function DeliveryDrawer({
-  deliveryId,
-  onClose,
-  onReplayed,
-}: {
-  deliveryId: string;
-  onClose: () => void;
-  onReplayed: () => void;
-}) {
-  const [delivery, setDelivery] = useState<DeliveryDetail | null>(null);
+function DeliveryDrawer({ id, onClose, onReplayed }: { id: string; onClose: () => void; onReplayed: () => void }) {
+  const load = useCallback(() => api.getDelivery(id), [id]);
+  const { data: delivery, error, refresh } = useRemote(load, 3000);
   const [replaying, setReplaying] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  useEffect(() => {
-    setDelivery(null);
-    api.getDelivery(deliveryId).then(setDelivery);
-  }, [deliveryId]);
-
+  const [confirming, setConfirming] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const canReplay = delivery?.status === "FAILED" || delivery?.status === "SUCCEEDED";
   async function replay() {
-    setReplaying(true);
-    setErr(null);
-    try {
-      await api.replayDelivery(deliveryId);
-      onReplayed();
-      setDelivery(await api.getDelivery(deliveryId));
-    } catch (error: any) {
-      setErr(error.message);
-    } finally {
-      setReplaying(false);
-    }
+    setReplaying(true); setActionError(null);
+    try { await api.replayDelivery(id); setConfirming(false); refresh(); onReplayed(); }
+    catch (err) { setActionError(err instanceof Error ? err.message : "Replay failed"); }
+    finally { setReplaying(false); }
   }
-
-  const canReplay =
-    delivery &&
-    delivery.status !== "PENDING" &&
-    delivery.status !== "RETRYING" &&
-    delivery.status !== "PROCESSING";
-
-  return (
-    <div
-      style={{
-        width: 380,
-        flexShrink: 0,
-        background: "var(--panel)",
-        border: "1px solid var(--border)",
-        borderRadius: 6,
-        padding: 20,
-        height: "fit-content",
-        position: "sticky",
-        top: 0,
-      }}
-    >
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start", marginBottom: 16 }}>
-        <div style={{ fontSize: 14, fontWeight: 600 }}>Delivery detail</div>
-        <button
-          onClick={onClose}
-          style={{ background: "none", border: "none", color: "var(--text-faint)", fontSize: 16, padding: 0 }}
-        >
-          ×
-        </button>
-      </div>
-
-      {!delivery ? (
-        <p style={{ color: "var(--text-faint)" }}>Loading…</p>
-      ) : (
-        <>
-          {err && (
-            <div
-              style={{
-                background: "rgba(217,99,77,0.12)",
-                border: "1px solid var(--failure)",
-                color: "var(--failure)",
-                borderRadius: 4,
-                padding: "8px 12px",
-                fontSize: 12,
-                marginBottom: 12,
-              }}
-            >
-              {err}
-            </div>
-          )}
-
-          <DetailRow label="Event type" value={delivery.event.type} mono />
-          <DetailRow label="Target" value={delivery.subscription.targetUrl} mono />
-          <DetailRow label="Status" value={<StatusPill status={delivery.status} />} />
-          <DetailRow label="Run" value={String(delivery.runNumber)} />
-          <DetailRow label="Attempts" value={`${delivery.attemptCount} / ${delivery.maxAttempts}`} />
-          {delivery.nextAttemptAt && (
-            <DetailRow label="Next attempt" value={new Date(delivery.nextAttemptAt).toLocaleString()} />
-          )}
-
-          <div style={{ fontSize: 12.5, color: "var(--text-dim)", margin: "16px 0 8px" }}>Attempt history</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
-            {delivery.attempts.length === 0 && (
-              <div style={{ fontSize: 12, color: "var(--text-faint)" }}>No attempts made yet.</div>
-            )}
-            {delivery.attempts.map((attempt) => (
-              <div
-                key={attempt.id}
-                style={{
-                  border: "1px solid var(--border)",
-                  borderRadius: 4,
-                  padding: "8px 10px",
-                  fontSize: 12,
-                }}
-              >
-                <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span>Run {attempt.runNumber} · Attempt {attempt.attemptNumber}</span>
-                  <span style={{ color: "var(--text-faint)" }}>
-                    {new Date(attempt.requestedAt).toLocaleTimeString()}
-                  </span>
-                </div>
-                <div style={{ color: attempt.errorMessage ? "var(--failure)" : "var(--success)", marginTop: 4 }}>
-                  {attempt.errorMessage ?? `HTTP ${attempt.responseStatus}`}
-                  {attempt.durationMs != null && (
-                    <span style={{ color: "var(--text-faint)" }}> · {attempt.durationMs}ms</span>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-
-          <button
-            onClick={replay}
-            disabled={!canReplay || replaying}
-            style={{
-              width: "100%",
-              background: canReplay ? "var(--amber)" : "var(--panel-raised)",
-              color: canReplay ? "#1a1305" : "var(--text-faint)",
-              border: canReplay ? "none" : "1px solid var(--border-strong)",
-              borderRadius: 4,
-              padding: "8px 0",
-              fontWeight: 600,
-              fontSize: 13,
-            }}
-          >
-            {replaying ? "Replaying…" : "Replay delivery"}
-          </button>
-        </>
-      )}
-    </div>
-  );
-}
-
-function DetailRow({ label, value, mono }: { label: string; value: ReactNode; mono?: boolean }) {
-  return (
-    <div style={{ marginBottom: 10 }}>
-      <div style={{ fontSize: 11.5, color: "var(--text-faint)", marginBottom: 2 }}>{label}</div>
-      <div className={mono ? "mono" : undefined} style={{ fontSize: 12.5, wordBreak: "break-all" }}>
-        {value}
-      </div>
-    </div>
-  );
+  return <aside className="panel delivery-drawer" aria-label="Delivery detail"><header className="drawer-heading"><h2>Delivery detail</h2><button aria-label="Close delivery detail" onClick={onClose}>×</button></header>
+    {(error || actionError) && <p role="alert" className="error-banner">{actionError || error}</p>}
+    {!delivery ? <p>{error ? "Could not load this delivery. It may have been deleted." : "Loading detail…"}</p> : <>
+      <code className="muted wrap">{delivery.id}</code><p><StatusPill status={delivery.status} /> · Run {delivery.runNumber} · {delivery.attemptCount}/{delivery.maxAttempts} attempts</p>
+      <p className="wrap">{delivery.subscription.targetUrl}</p>
+      {delivery.errorMessage && <p className="error-banner">{delivery.errorMessage}</p>}
+      {delivery.nextAttemptAt && <p className="muted">Next eligible start: {new Date(delivery.nextAttemptAt).toLocaleString()}. Retry backoff or subscription limits may delay delivery.</p>}
+      <details><summary>Event payload</summary><pre>{JSON.stringify(delivery.event.payload, null, 2)}</pre></details>
+      <h2>Attempt timeline</h2>
+      {!delivery.attempts.length && <p className="muted">No completed network attempts yet. Waiting for capacity does not consume an attempt.</p>}
+      <ol className="timeline">{delivery.attempts.map((a) => <li key={a.id}><strong>Run {a.runNumber} · Attempt {a.attemptNumber}</strong><div className="muted">{new Date(a.requestedAt).toLocaleString()} · {a.durationMs ?? "—"} ms</div><p className={a.errorMessage ? "failure-text" : "success-text"}>{a.errorMessage || `HTTP ${a.responseStatus ?? "—"}`}</p>{a.responseBodySnippet && <details><summary>Response snippet</summary><pre>{a.responseBodySnippet}</pre></details>}</li>)}</ol>
+      <p className="muted">Recovered attempts can have no recorded response if the worker stopped before saving it.</p>
+      {confirming ? <div className="confirmation"><p>Send this event again? Replay starts a new run and preserves history. The receiver may already have processed it.</p><button className="primary" disabled={replaying || !canReplay} onClick={replay}>{replaying ? "Replaying…" : "Confirm replay"}</button> <button disabled={replaying} onClick={() => setConfirming(false)}>Cancel</button></div> : <button className="primary" disabled={!canReplay || replaying} onClick={() => setConfirming(true)}>Replay delivery</button>}
+      {!canReplay && <p className="muted">Replay is available after the current run finishes.</p>}
+    </>}
+  </aside>;
 }

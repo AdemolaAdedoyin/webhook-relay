@@ -32,7 +32,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new ApiError(res.status, body?.error?.message ?? res.statusText, body?.error?.details);
+    throw new ApiError(res.status, `${body?.error?.message ?? res.statusText}${res.headers.get("x-request-id") ? ` (request ${res.headers.get("x-request-id")})` : ""}`, body?.error?.details);
   }
   if (res.status === 204) return undefined as T;
   return res.json();
@@ -45,6 +45,8 @@ export interface Subscription {
   eventTypes: string[];
   status: "ACTIVE" | "PAUSED" | "DISABLED";
   consecutiveFailures: number;
+  maxConcurrentDeliveries: number;
+  minDeliveryIntervalMs: number;
   createdAt: string;
   secretPreview?: string;
   secret?: string; // present only immediately after creation
@@ -67,6 +69,7 @@ export interface DeliverySummary {
   maxAttempts: number;
   nextAttemptAt: string | null;
   responseStatus: number | null;
+  errorMessage: string | null;
   createdAt: string;
   event: { id: string; type: string; createdAt: string };
   subscription: { id: string; targetUrl: string };
@@ -91,7 +94,18 @@ export interface DeliveryDetail extends DeliverySummary {
   attempts: DeliveryAttempt[];
 }
 
+export interface Operations {
+  events: number;
+  subscriptions: Record<Subscription["status"], number>;
+  deliveries: Record<DeliveryStatus, number>;
+  staleProcessing: number;
+}
+
 export const api = {
+  getOperations: () => request<Operations>("/v1/operations"),
+  updateLimits: (id: string, data: { maxConcurrentDeliveries: number; minDeliveryIntervalMs: number }) =>
+    request<Subscription>(`/v1/subscriptions/${id}/limits`, { method: "PATCH", body: JSON.stringify(data) }),
+  rotateSecret: (id: string) => request<{ secret: string; previousSecretExpiresAt: string }>(`/v1/subscriptions/${id}/rotate-secret`, { method: "POST", body: JSON.stringify({ graceSeconds: 300 }) }),
   listSubscriptions: () => request<Subscription[]>("/v1/subscriptions"),
   createSubscription: (data: { targetUrl: string; description?: string; eventTypes: string[] }) =>
     request<Subscription>("/v1/subscriptions", { method: "POST", body: JSON.stringify(data) }),
@@ -109,12 +123,12 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
-  listDeliveries: (params?: { subscriptionId?: string; status?: string }) => {
+  listDeliveries: (params?: { subscriptionId?: string; status?: string; eventId?: string }) => {
     const qs = new URLSearchParams(params as Record<string, string>).toString();
     return request<DeliverySummary[]>(`/v1/deliveries${qs ? `?${qs}` : ""}`);
   },
   getDelivery: (id: string) => request<DeliveryDetail>(`/v1/deliveries/${id}`),
-  replayDelivery: (id: string) => request<DeliveryDetail>(`/v1/deliveries/${id}/replay`, { method: "POST" }),
+  replayDelivery: (id: string) => request<DeliverySummary>(`/v1/deliveries/${id}/replay`, { method: "POST" }),
 };
 
 export { ApiError };

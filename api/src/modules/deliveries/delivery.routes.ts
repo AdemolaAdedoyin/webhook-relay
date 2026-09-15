@@ -7,6 +7,7 @@ export const deliveryRouter = Router();
 
 const listSchema = z.object({
   subscriptionId: z.string().min(1).optional(),
+  eventId: z.string().min(1).optional(),
   status: z.enum(["PENDING", "PROCESSING", "SUCCEEDED", "FAILED", "RETRYING"]).optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),
 });
@@ -20,6 +21,7 @@ deliveryRouter.get("/", async (req, res, next) => {
     res.json(
       await deliveryService.listDeliveries(tenantId, {
         limit: parsed.data.limit,
+        ...(parsed.data.eventId ? { eventId: parsed.data.eventId } : {}),
         ...(parsed.data.subscriptionId ? { subscriptionId: parsed.data.subscriptionId } : {}),
         ...(parsed.data.status ? { status: parsed.data.status } : {}),
       })
