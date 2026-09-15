@@ -106,6 +106,7 @@ beforeAll(async () => {
     name: "integration", apiKeyHash: createHash("sha256").update(apiKey).digest("hex"),
   } });
   tenantId = tenant.id;
+  await prisma.apiKey.create({ data: { tenantId, name: "integration admin", keyHash: tenant.apiKeyHash, scopes: ["admin"] } });
   sink = createServer(async (req, res) => {
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(Buffer.from(chunk));
@@ -359,6 +360,65 @@ describe("real delivery pipeline", () => {
       expect((await patch(other.subscriptions[0]!.id, { maxConcurrentDeliveries: 5 })).status).toBe(404);
       expect((await prisma.subscription.findUniqueOrThrow({ where: { id: other.subscriptions[0]!.id } })).maxConcurrentDeliveries).toBe(2);
     } finally { await prisma.tenant.delete({ where: { id: other.id } }); }
+  });
+
+  it("enforces scoped keys, expiry and revocation without revealing hashes", async () => {
+    const created = await request("/keys", { name: "read only", scopes: ["read"] });
+    expect(created.status).toBe(201);
+    const key = await created.json();
+    expect(key.token).toMatch(/^wrk_/);
+    expect(key.keyHash).toBeUndefined();
+    async function asKey(path: string, method = "GET", token = key.token) {
+      return fetch(`${apiOrigin}/v1${path}`, { method, headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, ...(method === "POST" ? { body: JSON.stringify({ type: "forbidden", payload: {} }) } : {}) });
+    }
+    expect((await asKey("/events")).status).toBe(200);
+    expect((await asKey("/events", "POST")).status).toBe(403);
+    expect((await asKey("/keys")).status).toBe(403);
+    expect((await asKey(`/subscriptions/${subscriptionId}/rotate-secret`, "POST")).status).toBe(403);
+    const listed = await (await request("/keys")).json();
+    expect(JSON.stringify(listed)).not.toContain(key.token);
+    expect(JSON.stringify(listed)).not.toContain("keyHash");
+    await prisma.apiKey.update({ where: { id: key.id }, data: { expiresAt: new Date(0) } });
+    expect((await asKey("/events")).status).toBe(401);
+    await prisma.apiKey.update({ where: { id: key.id }, data: { expiresAt: null } });
+    const revoked = await fetch(`${apiOrigin}/v1/keys/${key.id}`, { method: "DELETE", headers: { Authorization: `Bearer ${apiKey}` } });
+    expect(revoked.status).toBe(204);
+    expect((await asKey("/events")).status).toBe(401);
+    expect((await asKey("/events", "GET", `${apiKey} extra`)).status).toBe(401);
+  });
+
+  it("encrypts and rotates signing secrets, preserves grace and redacts nested responses", async () => {
+    const created = await request("/subscriptions", { targetUrl: "https://example.com/hook", eventTypes: ["encryption-only"] });
+    expect(created.status).toBe(201);
+    const sub = await created.json();
+    const stored = await prisma.subscription.findUniqueOrThrow({ where: { id: sub.id } });
+    expect(stored.secret).toMatch(/^enc:v1:/);
+    expect(stored.secret).not.toContain(sub.secret);
+    const rotated = await request(`/subscriptions/${subscriptionId}/rotate-secret`, { graceSeconds: 60 });
+    expect(rotated.status).toBe(200);
+    const next = await rotated.json();
+    expect((await request(`/subscriptions/${subscriptionId}/rotate-secret`, {})).status).toBe(409);
+    const before = receipts.length;
+    const id = await publish();
+    const delivery = await settled(id);
+    const receipt = receipts[before]!;
+    expect(verifySignature(receipt.body, secret, String(receipt.headers["webhook-signature"]))).toBe(true);
+    expect(verifySignature(receipt.body, next.secret, String(receipt.headers["webhook-signature"]))).toBe(true);
+    const detail = await (await request(`/events/${delivery.eventId}`)).json();
+    const publicSub = await (await request(`/subscriptions/${subscriptionId}`)).json();
+    for (const json of [detail, publicSub]) {
+      const text = JSON.stringify(json);
+      expect(text).not.toContain(next.secret);
+      expect(text).not.toContain(secret);
+      expect(text).not.toContain("enc:v1:");
+      expect(text).not.toContain("previousSecret");
+    }
+    await prisma.subscription.update({ where: { id: subscriptionId }, data: { previousSecretExpiresAt: new Date(0) } });
+    const later = await publish();
+    await settled(later);
+    const last = receipts.at(-1)!;
+    expect(verifySignature(last.body, next.secret, String(last.headers["webhook-signature"]))).toBe(true);
+    expect(verifySignature(last.body, secret, String(last.headers["webhook-signature"]))).toBe(false);
   });
 
   it("refreshes an active lease and drains an in-flight HTTP request on shutdown", async () => {

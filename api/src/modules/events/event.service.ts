@@ -178,7 +178,7 @@ export async function listEvents(tenantId: string, options: { type?: string; lim
 export async function getEvent(tenantId: string, id: string) {
   const event = await prisma.event.findFirst({
     where: { id, tenantId },
-    include: { deliveries: { include: { subscription: true } } },
+    include: { deliveries: { include: { subscription: { select: { id: true, targetUrl: true, description: true } } } } },
   });
   if (!event) throw new NotFoundError("Event", id);
   return toPublicEvent(event);

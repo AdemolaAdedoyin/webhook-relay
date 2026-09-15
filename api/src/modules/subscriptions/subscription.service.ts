@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { protectSecret } from "../../lib/secretEncryption";
 import { prisma } from "../../db";
 import { generateSecret } from "../../lib/signature";
 import { NotFoundError, ValidationError } from "../../lib/errors";
@@ -23,12 +25,14 @@ export async function createSubscription(input: CreateSubscriptionInput) {
   }
 
   const secret = generateSecret();
+  const id = randomUUID();
   const subscription = await prisma.subscription.create({
     data: {
+      id,
       tenantId: input.tenantId,
       targetUrl,
       eventTypes: input.eventTypes,
-      secret,
+      secret: protectSecret(secret, id),
       maxConcurrentDeliveries: input.maxConcurrentDeliveries ?? 2,
       minDeliveryIntervalMs: input.minDeliveryIntervalMs ?? 0,
       ...(input.description ? { description: input.description } : {}),
@@ -36,8 +40,7 @@ export async function createSubscription(input: CreateSubscriptionInput) {
   });
   // The secret is only ever returned in full at creation time; subsequent
   // reads redact it (see toPublicSubscription) so it can't leak via list/get.
-  const { nextDeliveryAllowedAt: _admissionClock, ...created } = subscription;
-  return created;
+  return { ...toPublicSubscription(subscription), secret };
 }
 
 export async function listSubscriptions(tenantId: string) {
@@ -75,9 +78,9 @@ export async function deleteSubscription(tenantId: string, id: string) {
   await prisma.subscription.delete({ where: { id } });
 }
 
-function toPublicSubscription<T extends { secret: string; nextDeliveryAllowedAt?: Date | null }>(sub: T) {
-  const { secret, nextDeliveryAllowedAt: _admissionClock, ...rest } = sub;
-  return { ...rest, secretPreview: `${secret.slice(0, 10)}${"*".repeat(8)}` };
+function toPublicSubscription<T extends { secret: string; nextDeliveryAllowedAt?: Date | null; previousSecret?: string | null; previousSecretExpiresAt?: Date | null }>(sub: T) {
+  const { secret, previousSecret: _previous, previousSecretExpiresAt: _expires, nextDeliveryAllowedAt: _admissionClock, ...rest } = sub;
+  return { ...rest, secretPreview: "whsec_********" };
 }
 
 export async function updateSubscriptionLimits(

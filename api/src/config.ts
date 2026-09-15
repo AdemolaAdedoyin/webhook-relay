@@ -18,6 +18,7 @@ const envSchema = z
     DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
     REDIS_URL: z.string().min(1, "REDIS_URL is required"),
     LOG_LEVEL: z.string().default("info"),
+    SIGNING_SECRET_KEY: z.preprocess((value) => value === "" ? undefined : value, z.string().regex(/^[0-9a-fA-F]{64}$/).optional()),
     // Delivery tuning
     DELIVERY_MAX_ATTEMPTS: z.coerce.number().int().min(1).default(8),
     DELIVERY_TIMEOUT_MS: z.coerce.number().int().min(100).default(10_000),
@@ -31,6 +32,9 @@ const envSchema = z
     SUBSCRIPTION_AUTO_DISABLE_THRESHOLD: z.coerce.number().int().min(1).default(5),
   })
   .superRefine((env, ctx) => {
+    if (env.NODE_ENV === "production" && !env.SIGNING_SECRET_KEY) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["SIGNING_SECRET_KEY"], message: "required in production" });
+    }
     if (env.DELIVERY_PROCESSING_STALE_MS <= env.DELIVERY_PROCESSING_HEARTBEAT_MS * 2) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,

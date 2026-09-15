@@ -1,3 +1,7 @@
+import { randomBytes } from "node:crypto";
+import { prisma } from "../../db";
+import { protectSecret, revealSecret } from "../../lib/secretEncryption";
+import { AppError, NotFoundError } from "../../lib/errors";
 import { Router } from "express";
 import { z } from "zod";
 import { ValidationError } from "../../lib/errors";
@@ -95,5 +99,32 @@ subscriptionRouter.patch("/:id/limits", async (req, res, next) => {
       ...(maxConcurrentDeliveries !== undefined ? { maxConcurrentDeliveries } : {}),
       ...(minDeliveryIntervalMs !== undefined ? { minDeliveryIntervalMs } : {}),
     }));
+  } catch (error) { next(error); }
+});
+
+const rotationSchema = z.object({ graceSeconds: z.number().int().min(0).max(3600).default(300) }).strict();
+subscriptionRouter.post("/:id/rotate-secret", async (req, res, next) => {
+  try {
+    const parsed = rotationSchema.safeParse(req.body);
+    if (!parsed.success) throw new ValidationError(parsed.error.flatten());
+    const id = req.params.id;
+    const tenantId = (req as any).tenantId as string;
+    const secret = `whsec_${randomBytes(24).toString("hex")}`;
+    const result = await prisma.$transaction(async (tx) => {
+      const rows = await tx.$queryRaw<Array<{ id: string }>>`SELECT id FROM "Subscription" WHERE id = ${id} AND "tenantId" = ${tenantId} FOR UPDATE`;
+      if (!rows.length) throw new NotFoundError("Subscription", id);
+      const sub = await tx.subscription.findUniqueOrThrow({ where: { id } });
+      const now = new Date();
+      if (sub.previousSecretExpiresAt && sub.previousSecretExpiresAt > now) throw new AppError("A signing rotation is already in its grace period", 409, "ROTATION_IN_PROGRESS");
+      const previousSecretExpiresAt = parsed.data.graceSeconds ? new Date(now.getTime() + parsed.data.graceSeconds * 1000) : null;
+      await tx.subscription.update({ where: { id }, data: {
+        secret: protectSecret(secret, id),
+        previousSecret: previousSecretExpiresAt ? protectSecret(revealSecret(sub.secret, id), id) : null,
+        previousSecretExpiresAt,
+      } });
+      return { id, secret, previousSecretExpiresAt };
+    });
+    res.setHeader("Cache-Control", "no-store");
+    res.json(result);
   } catch (error) { next(error); }
 });

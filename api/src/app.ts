@@ -4,13 +4,14 @@ import cors from "cors";
 import { rateLimit } from "express-rate-limit";
 import pinoHttp from "pino-http";
 import { logger } from "./lib/logger";
-import { requireAuth } from "./middleware/auth";
+import { requireAuth, requireScope, scopeByMethod } from "./middleware/auth";
 import { errorHandler } from "./middleware/errorHandler";
 import { subscriptionRouter } from "./modules/subscriptions/subscription.routes";
 import { eventRouter } from "./modules/events/event.routes";
 import { deliveryRouter } from "./modules/deliveries/delivery.routes";
 
 import { checkReadiness } from "./lib/readiness";
+import { keyRouter } from "./modules/keys/key.routes";
 import { operationsRouter } from "./modules/operations/operations.routes";
 
 export function createApp() {
@@ -52,10 +53,11 @@ export function createApp() {
     })
   );
 
-  app.use("/v1/operations", requireAuth, operationsRouter);
-  app.use("/v1/subscriptions", requireAuth, subscriptionRouter);
-  app.use("/v1/events", requireAuth, eventRouter);
-  app.use("/v1/deliveries", requireAuth, deliveryRouter);
+  app.use("/v1/keys", requireAuth, requireScope("admin"), keyRouter);
+  app.use("/v1/operations", requireAuth, requireScope("read"), operationsRouter);
+  app.use("/v1/subscriptions", requireAuth, scopeByMethod("manage_subscriptions"), subscriptionRouter);
+  app.use("/v1/events", requireAuth, scopeByMethod("publish"), eventRouter);
+  app.use("/v1/deliveries", requireAuth, scopeByMethod("replay"), deliveryRouter);
 
   app.use((req, res) => {
     res.status(404).json({ error: { code: "NOT_FOUND", message: `No route for ${req.method} ${req.path}` } });

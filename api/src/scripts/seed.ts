@@ -28,6 +28,11 @@ async function main() {
         data: { name: DEMO_TENANT_NAME, apiKeyHash },
       });
 
+  await prisma.apiKey.upsert({
+    where: { keyHash: apiKeyHash },
+    create: { tenantId: tenant.id, name: "Demo admin", keyHash: apiKeyHash, scopes: ["admin"] },
+    update: { revokedAt: null, expiresAt: null, scopes: ["admin"] },
+  });
   console.log(existing ? "Updated demo tenant:" : "Created demo tenant:", tenant.id);
   console.log("\nAPI key (save this; only its hash is stored in Postgres):\n");
   console.log(`  ${apiKey}\n`);
