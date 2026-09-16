@@ -8,6 +8,8 @@ vi.mock("../db", () => {
 
   return {
     prisma: {
+      $queryRaw: vi.fn(async () => []),
+      $transaction: async function(work: any) { return work(this); },
       subscription: {
         create: vi.fn(async ({ data }: any) => {
           const id = data.id ?? `sub_${++counter}`;
@@ -61,7 +63,7 @@ describe("subscription.service", () => {
   it("throws NotFoundError when updating a subscription that belongs to another tenant", async () => {
     const created = await subscriptionService.createSubscription({
       tenantId,
-      targetUrl: "https://example.com/hooks",
+      targetUrl: "https://example.com/other",
       eventTypes: [],
     });
 
@@ -73,7 +75,7 @@ describe("subscription.service", () => {
   it("resets consecutiveFailures when reactivating a subscription", async () => {
     const created = await subscriptionService.createSubscription({
       tenantId,
-      targetUrl: "https://example.com/hooks",
+      targetUrl: "https://example.com/reactivate",
       eventTypes: [],
     });
     await subscriptionService.updateSubscriptionStatus(tenantId, created.id, "PAUSED");

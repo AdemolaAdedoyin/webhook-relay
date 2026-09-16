@@ -4,7 +4,7 @@ import { enqueueDelivery } from "./deliveryQueue";
 
 export async function reconcilePendingDeliveries() {
   const deliveries = await prisma.delivery.findMany({
-    where: { status: { in: ["PENDING", "RETRYING"] } },
+    where: { status: { in: ["PENDING", "RETRYING"] }, subscription: { status: { not: "PAUSED" } } },
     orderBy: { createdAt: "asc" },
     take: 1_000,
     select: {

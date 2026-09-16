@@ -51,7 +51,7 @@ function formatIdempotentReplay(
 
 /**
  * Publishing an event is the fan-out entry point: we persist the event, find
- * every ACTIVE subscription interested in this event type (an empty
+ * every ACTIVE or PAUSED subscription interested in this event type (an empty
  * eventTypes array means "subscribed to everything"), create one Delivery
  * row per match, and then project those durable deliveries into BullMQ.
  *
@@ -79,7 +79,7 @@ export async function publishEvent(input: PublishEventInput) {
   const subscriptions = await prisma.subscription.findMany({
     where: {
       tenantId: input.tenantId,
-      status: "ACTIVE",
+      status: { in: ["ACTIVE", "PAUSED"] },
     },
   });
 

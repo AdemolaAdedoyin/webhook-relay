@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { protectSecret } from "../../lib/secretEncryption";
 import { prisma } from "../../db";
 import { generateSecret } from "../../lib/signature";
-import { NotFoundError, ValidationError } from "../../lib/errors";
+import { AppError, NotFoundError, ValidationError } from "../../lib/errors";
 import { assertWebhookUrlConfigured } from "../../lib/network";
 
 export interface CreateSubscriptionInput {
@@ -17,7 +17,9 @@ export interface CreateSubscriptionInput {
 export async function createSubscription(input: CreateSubscriptionInput) {
   let targetUrl: string;
   try {
-    targetUrl = assertWebhookUrlConfigured(input.targetUrl).toString();
+    const url = assertWebhookUrlConfigured(input.targetUrl);
+    url.hash = ""; // Fragments are not sent in HTTP requests.
+    targetUrl = url.toString();
   } catch (error) {
     throw new ValidationError({
       targetUrl: [error instanceof Error ? error.message : "Webhook target is not allowed"],
@@ -26,17 +28,30 @@ export async function createSubscription(input: CreateSubscriptionInput) {
 
   const secret = generateSecret();
   const id = randomUUID();
-  const subscription = await prisma.subscription.create({
-    data: {
-      id,
-      tenantId: input.tenantId,
-      targetUrl,
-      eventTypes: input.eventTypes,
-      secret: protectSecret(secret, id),
-      maxConcurrentDeliveries: input.maxConcurrentDeliveries ?? 2,
-      minDeliveryIntervalMs: input.minDeliveryIntervalMs ?? 0,
-      ...(input.description ? { description: input.description } : {}),
-    },
+  const eventTypes = [...new Set(input.eventTypes.map((type) => type.trim()))].sort();
+  if (eventTypes.some((type) => !type)) throw new ValidationError({ eventTypes: ["Event types cannot be blank"] });
+  const subscription = await prisma.$transaction(async (tx) => {
+    // Serializes creates for this tenant, including concurrent overlapping requests.
+    await tx.$queryRaw`SELECT id FROM "Tenant" WHERE id = ${input.tenantId} FOR UPDATE`;
+    const existing = await tx.subscription.findMany({ where: { tenantId: input.tenantId } });
+    const conflict = existing.some((sub) => {
+      const url = new URL(sub.targetUrl); url.hash = "";
+      return url.toString() === targetUrl && (sub.eventTypes.length === 0 || eventTypes.length === 0 ||
+        sub.eventTypes.some((type) => eventTypes.includes(type.trim())));
+    });
+    if (conflict) throw new AppError("This target already has a subscription with overlapping event types. Use the existing subscription or choose different event types.", 409, "SUBSCRIPTION_CONFLICT");
+    return tx.subscription.create({
+      data: {
+        id,
+        tenantId: input.tenantId,
+        targetUrl,
+        eventTypes,
+        secret: protectSecret(secret, id),
+        maxConcurrentDeliveries: input.maxConcurrentDeliveries ?? 2,
+        minDeliveryIntervalMs: input.minDeliveryIntervalMs ?? 0,
+        ...(input.description ? { description: input.description } : {}),
+      },
+    });
   });
   // The secret is only ever returned in full at creation time; subsequent
   // reads redact it (see toPublicSubscription) so it can't leak via list/get.

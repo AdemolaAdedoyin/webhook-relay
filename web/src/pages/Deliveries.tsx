@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api } from "../api/client";
 import StatusPill from "../components/StatusPill";
@@ -7,6 +7,8 @@ import { useRemote } from "../hooks/useRemote";
 export default function Deliveries() {
   const [params, setParams] = useSearchParams();
   const eventId = params.get("eventId") ?? "";
+  const [eventFilter, setEventFilter] = useState(eventId);
+  useEffect(() => setEventFilter(eventId), [eventId]);
   const status = params.get("status") ?? "";
   const subscriptionId = params.get("subscriptionId") ?? "";
   const selectedId = params.get("deliveryId");
@@ -20,10 +22,11 @@ export default function Deliveries() {
     setParams(next);
   }
   return <section>
-    <header className="page-heading"><div><p className="eyebrow">DELIVERY OPERATIONS</p><h1>Deliveries</h1><p>Latest 50 matching deliveries. Updates every 5 seconds.</p></div><button onClick={refresh}>Refresh</button></header>
+    <header className="page-heading"><div><p className="eyebrow">DELIVERY OPERATIONS</p><h1>Deliveries</h1><p>Latest 50 matching deliveries. Updates every 5 seconds. Paused subscriptions hold pending work until resumed.</p></div><button onClick={refresh}>Refresh</button></header>
     <div className="toolbar">
+      <form className="event-filter" onSubmit={(e) => { e.preventDefault(); filter("eventId", eventFilter.trim()); }}><label>Event ID<input value={eventFilter} onChange={(e) => setEventFilter(e.target.value)} placeholder="Paste an event ID" /></label><button type="submit">Apply event filter</button></form>
       <label>Status<select value={status} onChange={(e) => filter("status", e.target.value)}><option value="">All statuses</option>{["PENDING", "PROCESSING", "RETRYING", "SUCCEEDED", "FAILED"].map((s) => <option key={s}>{s}</option>)}</select></label>
-      <label>Subscription<select value={subscriptionId} onChange={(e) => filter("subscriptionId", e.target.value)}><option value="">All subscriptions</option>{subscriptions.data?.map((s) => <option key={s.id} value={s.id}>{s.description || s.targetUrl}</option>)}</select></label>
+      <label>Subscription<select value={subscriptionId} onChange={(e) => filter("subscriptionId", e.target.value)}><option value="">All subscriptions</option>{subscriptions.data?.map((s) => <option key={s.id} value={s.id}>{s.description || s.targetUrl} · {s.eventTypes.length ? s.eventTypes.join(", ") : "All events"} · {s.id.slice(-8)}</option>)}</select></label>
       {eventId && <span className="filter-chip">Event: <code>{eventId}</code> <button aria-label="Clear event filter" onClick={() => filter("eventId", "")}>×</button></span>}
       {(status || subscriptionId || eventId) && <button onClick={() => setParams({})}>Clear filters</button>}
     </div>
@@ -32,7 +35,7 @@ export default function Deliveries() {
     <div className="delivery-layout"><div className="table-scroll">
       {!data ? <p>{error ? "Unable to load deliveries. Try Refresh." : "Loading deliveries…"}</p> : !data.length ? <div className="empty-state">No deliveries match these filters. Deleted subscriptions lose delivery history; their original events remain.</div> : <table><thead><tr><th>Event / target</th><th>Status</th><th>Run / attempts</th><th>Latest result</th></tr></thead><tbody>
         {data.map((d) => <tr key={d.id} className={selectedId === d.id ? "selected-row" : ""}>
-          <td><button className="text-button" onClick={() => filter("deliveryId", d.id)}>{d.event.type}</button><div className="muted truncate" title={d.subscription.targetUrl}>{d.subscription.targetUrl}</div></td>
+          <td><button className="text-button" onClick={() => filter("deliveryId", d.id)}>{d.event.type}</button><div className="muted delivery-target">{d.subscription.targetUrl}</div><CopyTarget url={d.subscription.targetUrl} /></td>
           <td><StatusPill status={d.status} />{d.nextAttemptAt && <div className="muted">Eligible {new Date(d.nextAttemptAt).toLocaleTimeString()}</div>}</td>
           <td>Run {d.runNumber}<div className="muted">{d.attemptCount} / {d.maxAttempts} attempts</div></td>
           <td><div className={d.errorMessage ? "failure-text" : "muted"}>{d.errorMessage || (d.responseStatus ? `HTTP ${d.responseStatus}` : "Awaiting attempt")}</div></td>
@@ -71,4 +74,12 @@ function DeliveryDrawer({ id, onClose, onReplayed }: { id: string; onClose: () =
       {!canReplay && <p className="muted">Replay is available after the current run finishes.</p>}
     </>}
   </aside>;
+}
+
+function CopyTarget({ url }: { url: string }) {
+  const [message, setMessage] = useState("");
+  return <><button className="text-button copy-target" onClick={async () => {
+    try { await navigator.clipboard.writeText(url); setMessage("Copied"); }
+    catch { setMessage("Copy unavailable; select the URL text above."); }
+  }}>Copy URL</button><span className="muted" role="status">{message ? ` · ${message}` : ""}</span></>;
 }

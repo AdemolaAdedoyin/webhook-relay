@@ -17,9 +17,11 @@ export async function admitDeliveryAttempt(
         delivery.attemptCount !== attemptNumber - 1 || !["PENDING", "RETRYING"].includes(delivery.status)) {
       return { status: "skipped" };
     }
+    // Leave paused work durable and unconsumed. Reconciliation picks it up on resume.
+    if (subscription.status === "PAUSED") return { status: "skipped" };
     if (subscription.status !== "ACTIVE") {
       await tx.delivery.update({ where: { id: deliveryId }, data: {
-        status: "FAILED", nextAttemptAt: null, errorMessage: "Subscription paused or disabled",
+        status: "FAILED", nextAttemptAt: null, errorMessage: "Subscription disabled",
       } });
       return { status: "skipped" };
     }
