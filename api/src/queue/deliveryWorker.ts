@@ -87,25 +87,8 @@ async function processDelivery(job: Job<DeliveryJobData>, token?: string) {
   const leaseTimer = startLeaseRefresh(deliveryId, runNumber, attemptNumber);
 
   try {
-    if (delivery.subscription.status !== "ACTIVE") {
-      await prisma.delivery.updateMany({
-        where: {
-          id: deliveryId,
-          runNumber,
-          attemptCount: attemptNumber,
-          status: "PROCESSING",
-        },
-        data: {
-          status: "FAILED",
-          processingHeartbeatAt: null,
-          nextAttemptAt: null,
-          errorMessage: "Subscription paused or disabled",
-        },
-      });
-      logger.info({ deliveryId, runNumber, attemptNumber }, "subscription is not active; delivery failed");
-      return;
-    }
-
+    // Admission checked current subscription status under its row lock.
+    // A pause after that claim lets this in-flight attempt finish.
     const rawBody = JSON.stringify({
       id: delivery.event.id,
       type: delivery.event.type,

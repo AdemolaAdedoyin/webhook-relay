@@ -435,6 +435,47 @@ describe("real delivery pipeline", () => {
     expect(differentStatus).toEqual([]);
   });
 
+  it("holds queued, retrying and newly published work while paused, then resumes without spending attempts", async () => {
+    const { updateSubscriptionStatus } = await import("../src/modules/subscriptions/subscription.service");
+    const pending = await durable("PENDING");
+    const retry = await durable("PENDING");
+    await prisma.delivery.update({ where: { id: retry.id }, data: { status: "RETRYING", attemptCount: 1, nextAttemptAt: new Date(Date.now() + 200) } });
+    await updateSubscriptionStatus(tenantId, subscriptionId, "PAUSED");
+    const before = receipts.length;
+    await enqueueDelivery(pending.id, 1, 1);
+    await enqueueDelivery(retry.id, 1, 2);
+    const fresh = await publish();
+    await waitUntil(async () => {
+      const counts = await deliveryQueue.getJobCounts("active", "wait", "delayed");
+      return Object.values(counts).every((n) => n === 0);
+    });
+    await reconcilePendingDeliveries();
+    expect(receipts.length).toBe(before);
+    expect(await prisma.delivery.findUnique({ where: { id: pending.id } })).toMatchObject({ status: "PENDING", attemptCount: 0 });
+    expect(await prisma.delivery.findUnique({ where: { id: retry.id } })).toMatchObject({ status: "RETRYING", attemptCount: 1 });
+    expect(await prisma.delivery.findUnique({ where: { id: fresh } })).toMatchObject({ status: "PENDING", attemptCount: 0 });
+    await updateSubscriptionStatus(tenantId, subscriptionId, "ACTIVE");
+    await reconcilePendingDeliveries();
+    expect((await settled(pending.id)).attemptCount).toBe(1);
+    expect((await settled(retry.id)).attemptCount).toBe(2);
+    expect((await settled(fresh)).attemptCount).toBe(1);
+    expect(receipts.length).toBe(before + 3);
+  });
+
+  it("rejects concurrent overlapping subscriptions, including wildcard selections, without altering existing rows", async () => {
+    const targetUrl = `https://example.com/${randomUUID()}`;
+    const results = await Promise.all([
+      request("/subscriptions", { targetUrl, eventTypes: ["a", "b"] }),
+      request("/subscriptions", { targetUrl: targetUrl + "#ignored", eventTypes: ["b", "a", "a"] }),
+    ]);
+    expect(results.map((r) => r.status).sort()).toEqual([201, 409]);
+    expect((await request("/subscriptions", { targetUrl, eventTypes: [] })).status).toBe(409);
+    expect((await request("/subscriptions", { targetUrl, eventTypes: ["c"] })).status).toBe(201);
+    const rows = await prisma.subscription.findMany({ where: { tenantId, targetUrl } });
+    expect(rows).toHaveLength(2);
+    await prisma.subscription.deleteMany({ where: { tenantId, targetUrl } });
+  });
+
   it("refreshes an active lease and drains an in-flight HTTP request on shutdown", async () => {
     holdResponse = true;
     const before = receipts.length;

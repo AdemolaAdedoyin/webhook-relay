@@ -577,3 +577,28 @@ Connect with an admin or read-enabled key; write controls require their respecti
 scopes and display permission errors if unavailable. The key remains in browser
 session storage until disconnected. Lists are limited to the latest 50 records;
 full pagination and dashboard key administration remain deferred.
+
+## Pause, subscription overlap and retained events
+
+Pause now holds existing pending/retrying deliveries and creates held deliveries
+for new matching events. No attempt is consumed while held. Resume makes them
+eligible for the next reconciliation cycle (normally within 30 seconds), subject
+to retry backoff and throughput limits. Requests already claimed before the pause
+can finish. Disabled subscriptions retain their previous failure behavior. Old
+deliveries already marked failed by earlier versions are not automatically revived.
+
+Within one tenant, new subscriptions cannot overlap event types at the same
+normalized full URL, including wildcard/all-event subscriptions. URL fragments
+are ignored; event types are trimmed, deduplicated and sorted. Paths and query
+strings remain significant. Paused and disabled subscriptions still reserve their
+selection; resume/reactivate or delete them instead. Concurrent API creates are
+serialized per tenant. Existing duplicate rows are preserved, not silently merged.
+
+The dashboard groups subscriptions visually by full URL, exposes an Event ID
+filter on Deliveries and shows wrapping target URLs with a Copy URL control.
+
+An event with no remaining deliveries is a historical publishing record and,
+when supplied, retains its idempotency key. It is not a reusable subscription
+template: publishing the same event type creates a different ID. Reusing the
+original idempotency key returns that original event without restoring deleted
+deliveries. There is currently no event re-fan-out or automatic retention cleanup.

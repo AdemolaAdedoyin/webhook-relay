@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode, type CSSProperties } from "react";
+import { useEffect, useState, Fragment, type ReactNode, type CSSProperties } from "react";
 import { api, Subscription } from "../api/client";
 import StatusPill from "../components/StatusPill";
 
@@ -55,6 +55,9 @@ export default function Subscriptions() {
     });
   }
 
+  const groups = new Map<string, Subscription[]>();
+  for (const sub of subs ?? []) groups.set(sub.targetUrl, [...(groups.get(sub.targetUrl) ?? []), sub]);
+
   return (
     <div>
       <div className="page-heading">
@@ -80,7 +83,7 @@ export default function Subscriptions() {
         </button>
       </div>
 
-      <p className="muted">Pause preserves delivery history. Delete removes the subscription, its deliveries and attempts; original events remain.</p>
+      <p className="muted">Pause holds queued deliveries and new matching events without consuming attempts. Resume continues the backlog within the next reconciliation cycle (normally 30 seconds); in-flight requests may finish. Delete removes delivery history but keeps original events.</p>
       {error && <ErrorBanner message={error} />}
       <button onClick={refresh} disabled={!!busy}>Refresh subscriptions</button>
       {editing && <LimitsForm key={editing.id} subscription={editing} onClose={() => setEditing(null)} onSaved={async () => { setEditing(null); await refresh(); }} />}
@@ -143,7 +146,7 @@ export default function Subscriptions() {
         <div className="table-scroll"><table>
           <thead>
             <tr>
-              <th>Target</th>
+              <th>Subscription</th>
               <th>Event types</th>
               <th>Status</th>
               <th>Throughput</th>
@@ -151,15 +154,15 @@ export default function Subscriptions() {
             </tr>
           </thead>
           <tbody>
-            {subs.map((sub) => (
+            {[...groups].map(([targetUrl, subscriptions]) => <Fragment key={targetUrl}>
+              <tr className="target-group"><th colSpan={5}><span className="wrap">{targetUrl}</span> <span className="muted">({subscriptions.length} subscriptions)</span></th></tr>
+              {subscriptions.map((sub) => (
               <tr key={sub.id}>
                 <td>
                   <div className="mono" style={{ fontSize: 12.5 }}>
-                    {sub.targetUrl}
+                    {sub.description || "Unnamed subscription"}
                   </div>
-                  {sub.description && (
-                    <div style={{ fontSize: 12, color: "var(--text-faint)", marginTop: 2 }}>{sub.description}</div>
-                  )}
+                  <div className="muted wrap" style={{ marginTop: 2 }}>{sub.id}</div>
                 </td>
                 <td>
                   {sub.eventTypes.length === 0 ? (
@@ -194,7 +197,7 @@ export default function Subscriptions() {
                   </div>
                 </td>
               </tr>
-            ))}
+            ))}</Fragment>)}
           </tbody>
         </table></div>
       )}

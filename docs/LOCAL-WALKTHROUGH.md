@@ -39,7 +39,10 @@ app has no local-destination bypass.
    duplicates even without replay because delivery is at least once.
 5. Edit throughput limits to demonstrate the per-subscription concurrency cap and
    minimum interval. Waiting for capacity does not consume a network attempt.
-6. Pause a subscription to preserve history. Deletion removes its deliveries and
+6. Pause a subscription to hold queued work and new matching events. Resume
+   continues them on the next reconciliation cycle (normally within 30 seconds),
+   respecting existing retry delays and throughput limits. Already-claimed
+   requests may finish. Pause also preserves history. Deletion removes its deliveries and
    attempts, but retains the original event, which may belong to other deliveries.
 
 For a failure demo, use a receiver you control that returns HTTP 503, publish a
