@@ -41,7 +41,9 @@ subscriptionRouter.post("/", async (req, res, next) => {
 subscriptionRouter.get("/", async (req, res, next) => {
   try {
     const tenantId = (req as any).tenantId as string;
-    res.json(await subscriptionService.listSubscriptions(tenantId));
+    const parsed = z.enum(["true", "false"]).default("false").safeParse(req.query.includeArchived);
+    if (!parsed.success) throw new ValidationError(parsed.error.flatten());
+    res.json(await subscriptionService.listSubscriptions(tenantId, parsed.data === "true"));
   } catch (err) {
     next(err);
   }
@@ -114,6 +116,7 @@ subscriptionRouter.post("/:id/rotate-secret", async (req, res, next) => {
       const rows = await tx.$queryRaw<Array<{ id: string }>>`SELECT id FROM "Subscription" WHERE id = ${id} AND "tenantId" = ${tenantId} FOR UPDATE`;
       if (!rows.length) throw new NotFoundError("Subscription", id);
       const sub = await tx.subscription.findUniqueOrThrow({ where: { id } });
+      if (sub.archivedAt) throw new AppError("Subscription is archived", 409, "SUBSCRIPTION_ARCHIVED");
       const now = new Date();
       if (sub.previousSecretExpiresAt && sub.previousSecretExpiresAt > now) throw new AppError("A signing rotation is already in its grace period", 409, "ROTATION_IN_PROGRESS");
       const previousSecretExpiresAt = parsed.data.graceSeconds ? new Date(now.getTime() + parsed.data.graceSeconds * 1000) : null;

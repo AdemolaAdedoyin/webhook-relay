@@ -1,15 +1,17 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { api, EventSummary } from "../api/client";
 
 export default function EventLog() {
+  const [params, setParams] = useSearchParams();
+  const includeHistorical = params.get("includeHistorical") === "true";
   const [events, setEvents] = useState<EventSummary[] | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function refresh() {
     try {
-      setEvents(await api.listEvents());
+      setEvents(await api.listEvents(includeHistorical));
       setError(null);
     } catch (err: any) {
       setError(err.message);
@@ -18,7 +20,7 @@ export default function EventLog() {
 
   useEffect(() => {
     refresh();
-  }, []);
+  }, [includeHistorical]);
 
   return (
     <div>
@@ -26,7 +28,7 @@ export default function EventLog() {
         <div>
           <h1 style={{ fontSize: 20, fontWeight: 600, margin: 0 }}>Events</h1>
           <p style={{ color: "var(--text-dim)", fontSize: 13, margin: "4px 0 0" }}>
-            Latest 50 events, most recent first. Events remain after a subscription is deleted.
+            Latest 50 events, most recent first. Historical events remain available for inspection.
           </p>
         </div>
         <button
@@ -61,6 +63,7 @@ export default function EventLog() {
         </div>
       )}
 
+      <label><input type="checkbox" checked={includeHistorical} onChange={e => setParams(e.target.checked ? { includeHistorical: "true" } : {})} /> Include historical</label>{" "}
       <button onClick={refresh}>Refresh events</button>
       {showForm && (
         <PublishForm
@@ -100,12 +103,12 @@ export default function EventLog() {
           <tbody>
             {events.map((event) => (
               <tr key={event.id}>
-                <td className="mono">{event.type}</td>
+                <td className="mono">{event.type}{event.historical && <div className="muted">Historical</div>}</td>
                 <td style={{ color: "var(--text-dim)" }}>{new Date(event.createdAt).toLocaleString()}</td>
                 <td>{event._count.deliveries}</td>
                 <td>
-                  <Link to={`/deliveries?eventId=${event.id}`} style={{ color: "var(--teal)", fontSize: 12.5 }}>
-                    View deliveries
+                  <Link to={`/events/${event.id}`} style={{ color: "var(--teal)", fontSize: 12.5 }}>
+                    View event
                   </Link>
                 </td>
               </tr>

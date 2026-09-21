@@ -1,0 +1,2 @@
+ALTER TYPE "DeliveryStatus" ADD VALUE 'CANCELLED';
+ALTER TABLE "Subscription" ADD COLUMN "archivedAt" TIMESTAMP(3);

@@ -24,6 +24,11 @@ vi.mock("../db", () => {
         findMany: vi.fn(async ({ where }: any) =>
           [...subscriptions.values()].filter((s) => s.tenantId === where.tenantId)
         ),
+        updateMany: vi.fn(async ({ where, data }: any) => {
+          const record = subscriptions.get(where.id);
+          if (!record || record.tenantId !== where.tenantId || record.archivedAt) return { count: 0 };
+          subscriptions.set(where.id, { ...record, ...data }); return { count: 1 };
+        }),
         update: vi.fn(async ({ where, data }: any) => {
           const record = { ...subscriptions.get(where.id), ...data };
           subscriptions.set(where.id, record);

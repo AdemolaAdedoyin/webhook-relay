@@ -34,6 +34,7 @@ export async function recoverStaleProcessingDeliveries(now = new Date()) {
     orderBy: { lastAttemptAt: "asc" },
     take: 1_000,
     select: {
+      subscription: { select: { archivedAt: true } },
       id: true,
       runNumber: true,
       attemptCount: true,
@@ -51,7 +52,7 @@ export async function recoverStaleProcessingDeliveries(now = new Date()) {
     const leaseTimestamp = delivery.processingHeartbeatAt ?? delivery.lastAttemptAt;
     if (!leaseTimestamp) continue;
 
-    if (delivery.attemptCount >= delivery.maxAttempts) {
+    if (delivery.subscription?.archivedAt || delivery.attemptCount >= delivery.maxAttempts) {
       const finalized = await prisma.delivery.updateMany({
         where: {
           id: delivery.id,
@@ -61,7 +62,7 @@ export async function recoverStaleProcessingDeliveries(now = new Date()) {
           processingHeartbeatAt: delivery.processingHeartbeatAt,
         },
         data: {
-          status: "FAILED",
+          status: delivery.subscription?.archivedAt ? "CANCELLED" : "FAILED",
           processingHeartbeatAt: null,
           nextAttemptAt: null,
           errorMessage: "Worker stopped before the delivery attempt could be finalized",

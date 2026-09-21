@@ -20,6 +20,7 @@ const envSchema = z
     LOG_LEVEL: z.string().default("info"),
     SIGNING_SECRET_KEY: z.preprocess((value) => value === "" ? undefined : value, z.string().regex(/^[0-9a-fA-F]{64}$/).optional()),
     // Delivery tuning
+    DELIVERY_MAX_REPLAYS: z.coerce.number().int().min(0).default(5),
     DELIVERY_MAX_ATTEMPTS: z.coerce.number().int().min(1).default(8),
     DELIVERY_TIMEOUT_MS: z.coerce.number().int().min(100).default(10_000),
     DELIVERY_CONCURRENCY: z.coerce.number().int().min(1).default(10),

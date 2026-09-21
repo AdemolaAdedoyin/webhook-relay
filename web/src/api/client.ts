@@ -40,6 +40,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export interface Subscription {
   id: string;
+  archivedAt: string | null;
   targetUrl: string;
   description?: string | null;
   eventTypes: string[];
@@ -56,10 +57,11 @@ export interface EventSummary {
   id: string;
   type: string;
   createdAt: string;
+  historical: boolean;
   _count: { deliveries: number };
 }
 
-export type DeliveryStatus = "PENDING" | "PROCESSING" | "SUCCEEDED" | "FAILED" | "RETRYING";
+export type DeliveryStatus = "PENDING" | "PROCESSING" | "SUCCEEDED" | "FAILED" | "RETRYING" | "CANCELLED";
 
 export interface DeliverySummary {
   id: string;
@@ -72,7 +74,7 @@ export interface DeliverySummary {
   errorMessage: string | null;
   createdAt: string;
   event: { id: string; type: string; createdAt: string };
-  subscription: { id: string; targetUrl: string };
+  subscription: { id: string; targetUrl: string; archivedAt: string | null; status: string };
 }
 
 export interface DeliveryAttempt {
@@ -87,10 +89,12 @@ export interface DeliveryAttempt {
 }
 
 export interface DeliveryDetail extends DeliverySummary {
+  maxReplays: number;
+  replaysUsed: number;
   errorMessage: string | null;
   responseBodySnippet: string | null;
   event: { id: string; type: string; createdAt: string; payload: unknown };
-  subscription: { id: string; targetUrl: string; description: string | null };
+  subscription: { id: string; targetUrl: string; description: string | null; archivedAt: string | null; status: string };
   attempts: DeliveryAttempt[];
 }
 
@@ -106,7 +110,7 @@ export const api = {
   updateLimits: (id: string, data: { maxConcurrentDeliveries: number; minDeliveryIntervalMs: number }) =>
     request<Subscription>(`/v1/subscriptions/${id}/limits`, { method: "PATCH", body: JSON.stringify(data) }),
   rotateSecret: (id: string) => request<{ secret: string; previousSecretExpiresAt: string }>(`/v1/subscriptions/${id}/rotate-secret`, { method: "POST", body: JSON.stringify({ graceSeconds: 300 }) }),
-  listSubscriptions: () => request<Subscription[]>("/v1/subscriptions"),
+  listSubscriptions: (includeArchived = false) => request<Subscription[]>(`/v1/subscriptions?includeArchived=${includeArchived}`),
   createSubscription: (data: { targetUrl: string; description?: string; eventTypes: string[] }) =>
     request<Subscription>("/v1/subscriptions", { method: "POST", body: JSON.stringify(data) }),
   updateSubscriptionStatus: (id: string, status: "ACTIVE" | "PAUSED") =>
@@ -116,7 +120,8 @@ export const api = {
     }),
   deleteSubscription: (id: string) => request<void>(`/v1/subscriptions/${id}`, { method: "DELETE" }),
 
-  listEvents: () => request<EventSummary[]>("/v1/events"),
+  listEvents: (includeHistorical = false) => request<EventSummary[]>(`/v1/events?includeHistorical=${includeHistorical}`),
+  getEvent: (id: string) => request<EventSummary & { payload: unknown; idempotencyKey: string | null; deliveries: DeliverySummary[] }>(`/v1/events/${id}`),
   publishEvent: (data: { type: string; payload: unknown }) =>
     request<{ event: EventSummary; deliveryCount: number }>("/v1/events", {
       method: "POST",

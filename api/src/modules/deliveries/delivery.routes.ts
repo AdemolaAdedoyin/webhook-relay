@@ -8,7 +8,7 @@ export const deliveryRouter = Router();
 const listSchema = z.object({
   subscriptionId: z.string().min(1).optional(),
   eventId: z.string().min(1).optional(),
-  status: z.enum(["PENDING", "PROCESSING", "SUCCEEDED", "FAILED", "RETRYING"]).optional(),
+  status: z.string().transform(v => v.split(",")).pipe(z.array(z.enum(["PENDING", "PROCESSING", "SUCCEEDED", "FAILED", "RETRYING", "CANCELLED"])).min(1).max(6)).optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),
 });
 

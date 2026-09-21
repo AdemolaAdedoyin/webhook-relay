@@ -12,7 +12,7 @@ export async function getOperationsOverview(tenantId: string) {
       deliveries[row.status] = row._count._all;
     }
     const subscriptions = Object.fromEntries(Object.values(SubscriptionStatus).map((s) => [s, 0]));
-    for (const row of await tx.subscription.groupBy({ by: ["status"], where: { tenantId }, _count: { _all: true } })) {
+    for (const row of await tx.subscription.groupBy({ by: ["status"], where: { tenantId, archivedAt: null }, _count: { _all: true } })) {
       subscriptions[row.status] = row._count._all;
     }
     const events = await tx.event.count({ where: { tenantId } });

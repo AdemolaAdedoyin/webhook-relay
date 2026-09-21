@@ -9,9 +9,9 @@ export default function Overview() {
     {error && <p role="alert" className="error-banner">{error}</p>}
     {!data ? <p>{error ? "Check your connection or API-key permissions, then refresh." : "Loading overview…"}</p> : <>
       <div className="stat-grid">
-        <Link className="stat-card" to="/events"><span>Retained events</span><strong>{data.events}</strong><small>Original published records</small></Link>
+        <Link className="stat-card" to="/events?includeHistorical=true"><span>Retained events</span><strong>{data.events}</strong><small>Original published records</small></Link>
         <Link className="stat-card" to="/subscriptions"><span>Active subscriptions</span><strong>{data.subscriptions.ACTIVE}</strong><small>{data.subscriptions.PAUSED} paused · {data.subscriptions.DISABLED} disabled</small></Link>
-        <Link className="stat-card" to="/deliveries?status=PROCESSING"><span>In flight</span><strong>{data.deliveries.PROCESSING}</strong><small>{data.deliveries.PENDING} pending · {data.deliveries.RETRYING} retrying</small></Link>
+        <Link className="stat-card" to="/deliveries?status=PENDING,PROCESSING,RETRYING"><span>Outstanding deliveries</span><strong>{data.deliveries.PENDING + data.deliveries.PROCESSING + data.deliveries.RETRYING}</strong><small>{data.deliveries.PROCESSING} processing · {data.deliveries.PENDING} pending · {data.deliveries.RETRYING} retrying</small></Link>
         <Link className="stat-card" to="/deliveries?status=FAILED"><span>Failed deliveries</span><strong className={data.deliveries.FAILED ? "failure-text" : ""}>{data.deliveries.FAILED}</strong><small>{data.deliveries.SUCCEEDED} succeeded</small></Link>
       </div>
       <div className="panel"><h2>Needs attention</h2>

@@ -382,7 +382,7 @@ processing counts as well.
 Operations reads use one PostgreSQL repeatable-read snapshot scoped to the
 request's tenant. Thus they reflect all worker replicas and remain meaningful
 after an API restart. Metrics are **gauges of retained rows**, not lifetime
-counters: replay changes a delivery's current state and deletion lowers counts.
+counters: replay changes a delivery's current state and archiving removes subscriptions from active counts.
 Only fixed status enums are used as labels; no payloads, targets, tenant IDs or
 secrets appear in metrics. No global BullMQ queue totals are exposed to tenants.
 
@@ -476,7 +476,7 @@ supplied demo key and does not revoke other keys.
 | `admin` | All endpoints, including issuing/listing/revoking API keys. |
 | `read` | Read subscriptions, events, deliveries, operations and metrics. |
 | `publish` | Publish events. |
-| `manage_subscriptions` | Create/change/delete subscriptions and rotate signing secrets. |
+| `manage_subscriptions` | Create/change/archive subscriptions and rotate signing secrets. |
 | `replay` | Replay deliveries. |
 
 Scopes are combined explicitly (for example `read` + `publish`). `admin` can
@@ -569,9 +569,8 @@ history across replay runs, response snippets, errors and next eligible starts.
 Replay requires confirmation because the receiver may already have processed
 the event. Subscription controls support throughput limits, pause/resume,
 reactivation and signing-secret rotation with a five-minute grace period. Save
-the new secret at the receiver before that period expires. Deleting a subscription
-removes its deliveries and attempts, while original events remain; pause instead
-to retain history. Errors include request IDs when the API supplies them.
+the new secret at the receiver before that period expires. Archiving a subscription
+cancels pending work and retains its deliveries, attempts and original events. Errors include request IDs when the API supplies them.
 
 Connect with an admin or read-enabled key; write controls require their respective
 scopes and display permission errors if unavailable. The key remains in browser
@@ -591,7 +590,7 @@ Within one tenant, new subscriptions cannot overlap event types at the same
 normalized full URL, including wildcard/all-event subscriptions. URL fragments
 are ignored; event types are trimmed, deduplicated and sorted. Paths and query
 strings remain significant. Paused and disabled subscriptions still reserve their
-selection; resume/reactivate or delete them instead. Concurrent API creates are
+selection; resume/reactivate or archive them instead. Concurrent API creates are
 serialized per tenant. Existing duplicate rows are preserved, not silently merged.
 
 The dashboard groups subscriptions visually by full URL, exposes an Event ID
@@ -602,3 +601,38 @@ when supplied, retains its idempotency key. It is not a reusable subscription
 template: publishing the same event type creates a different ID. Reusing the
 original idempotency key returns that original event without restoring deleted
 deliveries. There is currently no event re-fan-out or automatic retention cleanup.
+
+## Archive lifecycle, event history and replay limits
+
+`DELETE /v1/subscriptions/:id` now archives idempotently instead of deleting rows.
+It retains the subscription and timestamps `archivedAt`; pending/retrying work
+becomes `CANCELLED`. Completed outcomes and attempts remain readable. Archived
+subscriptions cannot be modified, rotated or replayed, and no new events fan out
+to them. An already-claimed request may finish; failures cannot schedule another
+send. There is no unarchive action: use Pause for temporary holds. A new
+subscription may reuse an archived target/event selection without inheriting its
+history. Existing records deleted by older versions cannot be recovered by this
+migration. Apply migrations before starting the updated API and worker together.
+
+Subscription lists hide archives unless `includeArchived=true`. Events whose
+retained deliveries all belong to archived subscriptions are labelled Historical
+and hidden from the default event list; use `includeHistorical=true` to inspect
+them. Shared events remain operational while any associated subscription remains
+unarchived. Events without deliveries remain visible and readable; publication
+behavior without a subscriber is unchanged. Event detail shows the original
+payload, time, idempotency key and links to retained delivery/attempt history.
+Historical classification is derived; it never clears idempotency records.
+
+The Outstanding deliveries card totals PENDING + PROCESSING + RETRYING and opens
+that same combined filter. The delivery API accepts comma-separated statuses,
+for example `?status=PENDING,PROCESSING,RETRYING`. Single statuses still work.
+Paused pending/retrying work is labelled Held in the table.
+
+`DELIVERY_MAX_REPLAYS` defaults to 5 and can be set to 0 to disable manual replay.
+It limits lifetime manual runs for each delivery (`runNumber - 1`), independently
+of its per-run attempt budget. The API serializes replay against archive and
+concurrent replay requests and returns 409 at the limit. Detail views display
+used/maximum replays and disable replay for archived/cancelled records or when
+the cap is reached. Existing runs count toward the cap; lowering configuration
+does not cancel an already-running delivery. Configure the same cap for all API
+replicas. With Compose, set it in the root environment and recreate services.

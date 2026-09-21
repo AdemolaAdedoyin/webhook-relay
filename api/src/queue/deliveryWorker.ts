@@ -161,6 +161,7 @@ async function processDelivery(job: Job<DeliveryJobData>, token?: string) {
 
     if (succeeded) {
       const finalized = await prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT id FROM "Subscription" WHERE id = ${delivery.subscriptionId} FOR UPDATE`;
         const updated = await tx.delivery.updateMany({
           where: {
             id: delivery.id,
@@ -197,6 +198,7 @@ async function processDelivery(job: Job<DeliveryJobData>, token?: string) {
 
     if (exhausted) {
       const result = await prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT id FROM "Subscription" WHERE id = ${delivery.subscriptionId} FOR UPDATE`;
         const updated = await tx.delivery.updateMany({
           where: {
             id: delivery.id,
@@ -245,24 +247,21 @@ async function processDelivery(job: Job<DeliveryJobData>, token?: string) {
 
     const delay = computeBackoffMs(attemptNumber);
     const nextAttemptAt = new Date(Date.now() + delay);
-    const released = await prisma.delivery.updateMany({
-      where: {
-        id: delivery.id,
-        runNumber,
-        attemptCount: attemptNumber,
-        status: "PROCESSING",
-      },
-      data: {
-        status: "RETRYING",
-        processingHeartbeatAt: null,
-        nextAttemptAt,
-        responseStatus,
-        responseBodySnippet,
-        errorMessage,
-      },
+    const released = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "Subscription" WHERE id = ${delivery.subscriptionId} FOR UPDATE`;
+      const sub = await tx.subscription.findUniqueOrThrow({ where: { id: delivery.subscriptionId } });
+      const result = await tx.delivery.updateMany({
+        where: { id: delivery.id, runNumber, attemptCount: attemptNumber, status: "PROCESSING" },
+        data: {
+          status: sub.archivedAt ? "CANCELLED" : "RETRYING",
+          processingHeartbeatAt: null,
+          nextAttemptAt: sub.archivedAt ? null : nextAttemptAt,
+          responseStatus, responseBodySnippet, errorMessage,
+        },
+      });
+      return result.count === 1 && !sub.archivedAt;
     });
-
-    if (released.count !== 1) return;
+    if (!released) return;
 
     try {
       await enqueueDelivery(delivery.id, runNumber, attemptNumber + 1, delay);

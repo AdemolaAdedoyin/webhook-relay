@@ -19,6 +19,7 @@ enum SubscriptionStatus {
 }
 
 enum DeliveryStatus {
+  CANCELLED
   PENDING
   PROCESSING // atomically claimed by one worker for the current run/attempt
   SUCCEEDED
@@ -40,6 +41,7 @@ model Subscription {
   id            String             @id @default(cuid())
   tenant        Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   tenantId      String
+  archivedAt    DateTime?
   targetUrl     String
   description   String?
   eventTypes    String[] // e.g. ["order.created", "order.refunded"]; empty = all events
