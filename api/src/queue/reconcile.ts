@@ -2,10 +2,14 @@ import { prisma } from "../db";
 import { logger } from "../lib/logger";
 import { enqueueDelivery } from "./deliveryQueue";
 
+let cursor: string | undefined;
+
 export async function reconcilePendingDeliveries() {
   const deliveries = await prisma.delivery.findMany({
-    where: { status: { in: ["PENDING", "RETRYING"] }, subscription: { status: { not: "PAUSED" } } },
-    orderBy: { createdAt: "asc" },
+    where: { status: { in: ["PENDING", "RETRYING"] }, ...(cursor ? { id: { gt: cursor } } : {}),
+      OR: [{ subscription: { status: { not: "PAUSED" } } }, { subscription: { archivedAt: { not: null } } }],
+    },
+    orderBy: { id: "asc" },
     take: 1_000,
     select: {
       id: true,
@@ -15,6 +19,8 @@ export async function reconcilePendingDeliveries() {
     },
   });
 
+  // Advance across passes so a large delayed backlog cannot starve newer work.
+  cursor = deliveries.length === 1000 ? deliveries[deliveries.length - 1]!.id : undefined;
   let repaired = 0;
   let failed = 0;
 

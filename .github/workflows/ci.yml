@@ -103,3 +103,10 @@ jobs:
       - name: Stop disposable CI stack
         if: always()
         run: docker compose down -v
+
+  production-mode:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate production mode locally (no deployment)
+        run: bash scripts/check-production.sh

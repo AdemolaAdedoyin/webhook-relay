@@ -556,6 +556,16 @@ describe("real delivery pipeline", () => {
     expect(await prisma.delivery.count({ where: { subscriptionId: sub.id, status: { in: ["PENDING", "PROCESSING", "RETRYING"] } } })).toBe(0);
   });
 
+  it("reports malformed and oversized request bodies as client errors without exposing payloads", async () => {
+    const headers = { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" };
+    const malformed = await fetch(`${apiOrigin}/v1/events`, { method: "POST", headers, body: '{"sensitive":' });
+    expect(malformed.status).toBe(400);
+    expect((await malformed.json()).error.code).toBe("INVALID_BODY");
+    const large = await fetch(`${apiOrigin}/v1/events`, { method: "POST", headers, body: JSON.stringify({ payload: "x".repeat(1024 * 1024) }) });
+    expect(large.status).toBe(413);
+    expect(large.headers.get("cache-control")).toBe("no-store");
+  });
+
   it("refreshes an active lease and drains an in-flight HTTP request on shutdown", async () => {
     holdResponse = true;
     const before = receipts.length;

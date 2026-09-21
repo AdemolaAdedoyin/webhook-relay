@@ -12,7 +12,13 @@ React (Vite) dashboard.
 
 Start with the [local walkthrough](docs/LOCAL-WALKTHROUGH.md) for a guided demo.
 [Deployment preparation](docs/DEPLOYMENT-PREPARATION.md) records what is hardened
-and what remains before public hosting. No production deployment is configured.
+and what remains before public hosting. A separate production-mode Compose template
+is provided and tested locally; no public deployment has been performed.
+
+- [API reference](docs/API.md): authentication, endpoints, signatures and errors.
+- [Dashboard guide](docs/UI.md): filters, event history, pause/archive and replay.
+- [Operations guide](docs/OPERATIONS.md): development, production configuration, checks and recovery.
+- [Final audit](docs/FINAL-AUDIT.md): fixes, verification and remaining launch gates.
 Run `bash scripts/check-local.sh` after startup for read-only readiness checks.
 
 ## Why this exists
@@ -105,8 +111,8 @@ created and again immediately before every outbound request. Delivery rejects
 non-HTTP(S) URLs, embedded credentials, localhost, private/link-local/reserved IP
 ranges, and cloud metadata-style destinations. Hostnames are resolved at send
 time so a DNS change cannot silently turn an originally public target into an
-internal address. Redirects are handled with `redirect: "manual"` rather than
-followed automatically.
+internal address. The HTTP connection uses the validated DNS address directly,
+closing the gap between validation and connection. Redirects are never followed.
 
 In production, outbound delivery is opt-in through `WEBHOOK_ALLOWED_HOSTS`, a
 comma-separated list of exact hostnames. If that list is empty, production
@@ -215,7 +221,7 @@ With local PostgreSQL and Redis already running:
 ```bash
 cd api
 cp .env.example .env
-npm install
+npm ci
 npx prisma migrate dev
 npm run seed
 npm run dev
@@ -231,7 +237,7 @@ Then start the dashboard:
 
 ```bash
 cd web
-npm install
+npm ci
 npm run dev
 ```
 
@@ -286,12 +292,12 @@ semantics under the same key is rejected with `409 IDEMPOTENCY_CONFLICT`.
 ## Verifying signatures as a receiver
 
 ```text
-Webhook-Signature: t=1699999999,v1=<hex hmac-sha256>
+Webhook-Signature: t=1699999999000,v1=<hex hmac-sha256>
 ```
 
 Recompute `HMAC-SHA256(secret, "${t}.${rawBody}")` and compare it to `v1`
 using a constant-time comparison; reject requests whose `t` is more than a few
-minutes old. See `api/src/lib/signature.ts` for the reference implementation.
+minutes old (`t` is Unix time in milliseconds). See `api/src/lib/signature.ts` for the reference implementation.
 
 ## Tests
 
@@ -304,8 +310,8 @@ the API test suite and TypeScript build, and builds the React dashboard.
 
 ## What I'd add with more time
 
-- Per-subscription delivery rate limiting, so one slow subscriber's queue depth
-  can't starve others under the same tenant.
+- Full cursor pagination, configurable retention, and shared API rate limits
+  for multi-replica deployments.
 - A `deliveries.stats` endpoint (success rate, p95 latency per subscription) for
   the dashboard.
 - A webhook payload schema registry so publishers can validate event contracts.
@@ -403,12 +409,13 @@ recovery. Inspect delivery details and worker logs before replaying work. This
 phase does not add request-rate histograms or a global administrative metrics
 surface.
 
-## Remaining roadmap
+## Readiness
 
-Phases 12 and 13 are combined as local container readiness and documentation.
-Live production deployment is intentionally deferred.
-
-14. Final full audit and documented deferrals.
+The final audit and API/UI documentation are complete; see the
+[verification record and documented deferrals](docs/FINAL-AUDIT.md). Local and
+production-mode Docker checks run in CI. Live production deployment remains
+intentionally deferred until the host-specific launch gates are satisfied.
+Use Node 22.12+ (22.x) or Node 24 for source development.
 
 ## Per-subscription throughput
 
@@ -459,8 +466,7 @@ exactly-once network guarantee.
 Rollout: apply migrations before starting the new API/worker, and drain old worker
 replicas before enabling new ones. Older worker code does not enforce these
 controls. Existing subscriptions receive the default cap of two and no pacing.
-The dashboard can read these fields through subscription APIs; editing controls
-in the dashboard is reserved for the dashboard-polish phase.
+The dashboard exposes these settings in the subscription throughput controls.
 
 ## API-key lifecycle and scopes
 

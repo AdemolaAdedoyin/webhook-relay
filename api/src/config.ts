@@ -14,7 +14,9 @@ const commaSeparatedHosts = z
 const envSchema = z
   .object({
     NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
-    PORT: z.coerce.number().default(3000),
+    PORT: z.coerce.number().int().min(1).max(65535).default(3000),
+    CORS_ORIGINS: z.string().default("").transform(v => v.split(",").map(s => s.trim()).filter(Boolean)).refine(values => values.every(v => { try { const u = new URL(v); return ["http:", "https:"].includes(u.protocol) && u.origin === v; } catch { return false; } }), "Use exact http(s) origins without paths"),
+    TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(10).default(0),
     DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
     REDIS_URL: z.string().min(1, "REDIS_URL is required"),
     LOG_LEVEL: z.string().default("info"),
@@ -33,6 +35,7 @@ const envSchema = z
     SUBSCRIPTION_AUTO_DISABLE_THRESHOLD: z.coerce.number().int().min(1).default(5),
   })
   .superRefine((env, ctx) => {
+    if (env.NODE_ENV === "production" && env.CORS_ORIGINS.length === 0) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["CORS_ORIGINS"], message: "required in production" });
     if (env.NODE_ENV === "production" && !env.SIGNING_SECRET_KEY) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["SIGNING_SECRET_KEY"], message: "required in production" });
     }

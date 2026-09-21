@@ -5,7 +5,7 @@ import { createHmac, randomBytes, timingSafeEqual } from "crypto";
  * mixed into the signed string so a captured request can't be replayed
  * indefinitely, and the header carries both the timestamp and the digest.
  *
- *   Webhook-Signature: t=1699999999,v1=<hex hmac-sha256>
+ *   Webhook-Signature: t=1699999999000,v1=<hex hmac-sha256>
  *
  * Receivers should recompute the HMAC over `${t}.${rawBody}` using the
  * shared secret and compare with `verifySignature`, then reject requests
