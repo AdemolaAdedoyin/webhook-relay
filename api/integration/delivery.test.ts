@@ -178,7 +178,7 @@ describe("real delivery pipeline", () => {
       const overview = await (await request("/operations")).json();
       expect(overview.events).toBe(0);
       expect(overview.subscriptions).toEqual({ ACTIVE: 1, PAUSED: 0, DISABLED: 0 });
-      expect(Object.values(overview.deliveries)).toEqual([0, 0, 0, 0, 0]);
+      expect(Object.values(overview.deliveries)).toEqual([0, 0, 0, 0, 0, 0]);
       expect(overview.staleProcessing).toBe(0);
       const metrics = await request("/operations/metrics");
       expect(metrics.headers.get("content-type")).toContain("text/plain");
@@ -474,6 +474,86 @@ describe("real delivery pipeline", () => {
     const rows = await prisma.subscription.findMany({ where: { tenantId, targetUrl } });
     expect(rows).toHaveLength(2);
     await prisma.subscription.deleteMany({ where: { tenantId, targetUrl } });
+  });
+
+  it("archives subscriptions without deleting shared events or attempt history and blocks mutations", async () => {
+    const { deleteSubscription, updateSubscriptionStatus, updateSubscriptionLimits } = await import("../src/modules/subscriptions/subscription.service");
+    const subs = await Promise.all(["a", "b"].map(name => prisma.subscription.create({ data: { tenantId, targetUrl: `https://example.com/archive-${name}`, secret, eventTypes: ["archive.test"] } })));
+    const e = await prisma.event.create({ data: { tenantId, type: "archive.test", payload: { kept: true } } });
+    const done = await prisma.delivery.create({ data: { eventId: e.id, subscriptionId: subs[0]!.id, status: "SUCCEEDED", attempts: { create: { runNumber: 1, attemptNumber: 1, responseStatus: 200 } } } });
+    const pending = await prisma.delivery.create({ data: { eventId: e.id, subscriptionId: subs[1]!.id } });
+    await expect(deleteSubscription("other-tenant", subs[0]!.id)).rejects.toMatchObject({ statusCode: 404 });
+    await deleteSubscription(tenantId, subs[0]!.id);
+    await deleteSubscription(tenantId, subs[0]!.id); // idempotent
+    expect((await (await request(`/events/${e.id}`)).json()).historical).toBe(false);
+    expect((await request(`/deliveries/${done.id}/replay`, {})).status).toBe(409);
+    expect(await prisma.deliveryAttempt.count({ where: { deliveryId: done.id } })).toBe(1);
+    await expect(updateSubscriptionStatus(tenantId, subs[0]!.id, "ACTIVE")).rejects.toMatchObject({ statusCode: 409 });
+    await expect(updateSubscriptionLimits(tenantId, subs[0]!.id, { maxConcurrentDeliveries: 3 })).rejects.toMatchObject({ statusCode: 404 });
+    expect((await request(`/subscriptions/${subs[0]!.id}/rotate-secret`, {})).status).toBe(409);
+    await deleteSubscription(tenantId, subs[1]!.id);
+    expect(await prisma.delivery.findUnique({ where: { id: pending.id } })).toMatchObject({ status: "CANCELLED", attemptCount: 0 });
+    expect((await (await request(`/events/${e.id}`)).json()).historical).toBe(true);
+    expect((await (await request("/events")).json()).some((v: any) => v.id === e.id)).toBe(false);
+    expect((await (await request("/events?includeHistorical=true")).json()).find((v: any) => v.id === e.id).historical).toBe(true);
+    expect((await (await request("/subscriptions")).json()).some((v: any) => v.id === subs[0]!.id)).toBe(false);
+    expect((await (await request("/subscriptions?includeArchived=true")).json()).some((v: any) => v.id === subs[0]!.id)).toBe(true);
+    const published = await (await request("/events", { type: "archive.test", payload: {} })).json();
+    expect(published.deliveryCount).toBe(0);
+  });
+
+  it("enforces the final replay slot under concurrency and rejects replay after archiving", async () => {
+    const { replayDelivery } = await import("../src/modules/deliveries/delivery.service");
+    const { deleteSubscription } = await import("../src/modules/subscriptions/subscription.service");
+    const sub = await prisma.subscription.create({ data: { tenantId, targetUrl: "https://example.com/replay-cap", secret, status: "PAUSED" } });
+    const e = await prisma.event.create({ data: { tenantId, type: "cap", payload: {} } });
+    const d = await prisma.delivery.create({ data: { eventId: e.id, subscriptionId: sub.id, status: "FAILED", runNumber: 5 } });
+    const outcomes = await Promise.allSettled([replayDelivery(tenantId, d.id), replayDelivery(tenantId, d.id)]);
+    expect(outcomes.filter(v => v.status === "fulfilled")).toHaveLength(1);
+    expect(await prisma.delivery.findUnique({ where: { id: d.id } })).toMatchObject({ runNumber: 6 });
+    await prisma.delivery.update({ where: { id: d.id }, data: { status: "FAILED" } });
+    await expect(replayDelivery(tenantId, d.id)).rejects.toMatchObject({ code: "REPLAY_LIMIT_REACHED" });
+    const detail = await (await request(`/deliveries/${d.id}`)).json();
+    expect(detail).toMatchObject({ replaysUsed: 5, maxReplays: 5 });
+    await deleteSubscription(tenantId, sub.id);
+    await expect(replayDelivery(tenantId, d.id)).rejects.toMatchObject({ code: "DELIVERY_ARCHIVED" });
+  });
+
+  it("filters multiple delivery states and rejects invalid states", async () => {
+    const result = await request("/deliveries?status=SUCCEEDED,CANCELLED&limit=200");
+    expect(result.status).toBe(200);
+    const rows = await result.json();
+    expect(rows.some((d: any) => d.status === "SUCCEEDED")).toBe(true);
+    expect(rows.some((d: any) => d.status === "CANCELLED")).toBe(true);
+    expect(rows.every((d: any) => ["SUCCEEDED", "CANCELLED"].includes(d.status))).toBe(true);
+    expect((await request("/deliveries?status=PENDING,BOGUS")).status).toBe(422);
+  });
+
+  it("allows an already-started request to finish after archive without retrying its failure", async () => {
+    const { deleteSubscription } = await import("../src/modules/subscriptions/subscription.service");
+    const sub = await prisma.subscription.create({ data: { tenantId, targetUrl: `${receiver.origin}/archive-inflight`, eventTypes: ["archive.inflight"], secret } });
+    holdResponse = true; responseStatus = 503;
+    const before = receipts.length;
+    try {
+      const d = await publish("archive.inflight");
+      await waitUntil(async () => receipts.length === before + 1);
+      await deleteSubscription(tenantId, sub.id);
+      holdResponse = false; releaseResponse?.(); releaseResponse = undefined;
+      const result = await settled(d, "CANCELLED");
+      expect(result.attemptCount).toBe(1);
+      expect(result.attempts).toHaveLength(1);
+      expect(result.attempts[0]!.responseStatus).toBe(503);
+      expect(result.nextAttemptAt).toBeNull();
+      await reconcilePendingDeliveries();
+      expect(receipts.length).toBe(before + 1);
+    } finally { holdResponse = false; releaseResponse?.(); releaseResponse = undefined; responseStatus = 200; }
+  });
+
+  it("serializes publication with archive so no pending work survives for the retired target", async () => {
+    const { deleteSubscription } = await import("../src/modules/subscriptions/subscription.service");
+    const sub = await prisma.subscription.create({ data: { tenantId, targetUrl: "https://example.com/archive-race", eventTypes: ["archive.race"], secret, status: "PAUSED" } });
+    await Promise.all([deleteSubscription(tenantId, sub.id), request("/events", { type: "archive.race", payload: {} })]);
+    expect(await prisma.delivery.count({ where: { subscriptionId: sub.id, status: { in: ["PENDING", "PROCESSING", "RETRYING"] } } })).toBe(0);
   });
 
   it("refreshes an active lease and drains an in-flight HTTP request on shutdown", async () => {

@@ -10,6 +10,8 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../db", () => ({
   prisma: {
+    $transaction: async function(work: any) { return work(this); },
+    $queryRaw: vi.fn(async () => []),
     delivery: {
       findFirst: mocks.findFirst,
       updateMany: mocks.updateMany,
@@ -36,6 +38,7 @@ describe("delivery replay", () => {
   it("starts a new run with a fresh retry budget while preserving history", async () => {
     mocks.findFirst.mockResolvedValue({
       id: "delivery_1",
+      subscription: { archivedAt: null },
       status: "FAILED",
       runNumber: 1,
       attemptCount: 8,
@@ -43,6 +46,7 @@ describe("delivery replay", () => {
     mocks.updateMany.mockResolvedValue({ count: 1 });
     mocks.findUniqueOrThrow.mockResolvedValue({
       id: "delivery_1",
+      subscription: { archivedAt: null },
       status: "PENDING",
       runNumber: 2,
       attemptCount: 0,
@@ -71,6 +75,7 @@ describe("delivery replay", () => {
   it("rejects a concurrent replay that already changed the terminal row", async () => {
     mocks.findFirst.mockResolvedValue({
       id: "delivery_1",
+      subscription: { archivedAt: null },
       status: "SUCCEEDED",
       runNumber: 2,
       attemptCount: 1,
@@ -86,6 +91,7 @@ describe("delivery replay", () => {
   it("rejects replay while the delivery is actively processing", async () => {
     mocks.findFirst.mockResolvedValue({
       id: "delivery_1",
+      subscription: { archivedAt: null },
       status: "PROCESSING",
       runNumber: 1,
       attemptCount: 1,

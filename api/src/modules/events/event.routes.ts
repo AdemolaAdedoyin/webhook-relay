@@ -25,6 +25,7 @@ const idempotencyKeySchema = z.string().trim().min(1).max(200);
 
 const listSchema = z.object({
   type: z.string().min(1).max(120).optional(),
+  includeHistorical: z.enum(["true", "false"]).default("false"),
   limit: z.coerce.number().int().min(1).max(200).default(50),
 });
 
@@ -66,6 +67,7 @@ eventRouter.get("/", async (req, res, next) => {
     res.json(
       await eventService.listEvents(tenantId, {
         limit: parsed.data.limit,
+        includeHistorical: parsed.data.includeHistorical === "true",
         ...(parsed.data.type ? { type: parsed.data.type } : {}),
       })
     );

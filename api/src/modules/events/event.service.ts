@@ -76,17 +76,6 @@ export async function publishEvent(input: PublishEventInput) {
     }
   }
 
-  const subscriptions = await prisma.subscription.findMany({
-    where: {
-      tenantId: input.tenantId,
-      status: { in: ["ACTIVE", "PAUSED"] },
-    },
-  });
-
-  const matching = subscriptions.filter(
-    (sub) => sub.eventTypes.length === 0 || sub.eventTypes.includes(input.type)
-  );
-
   let committed: {
     event: Awaited<ReturnType<typeof prisma.event.create>>;
     deliveries: Array<{ id: string }>;
@@ -94,6 +83,19 @@ export async function publishEvent(input: PublishEventInput) {
 
   try {
     committed = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "Tenant" WHERE id = ${input.tenantId} FOR UPDATE`;
+      const subscriptions = await tx.subscription.findMany({
+        where: {
+          tenantId: input.tenantId,
+          archivedAt: null,
+          status: { in: ["ACTIVE", "PAUSED"] },
+        },
+      });
+
+      const matching = subscriptions.filter(
+        (sub) => sub.eventTypes.length === 0 || sub.eventTypes.includes(input.type)
+      );
+
       const event = await tx.event.create({
         data: {
           tenantId: input.tenantId,
@@ -161,25 +163,29 @@ export async function publishEvent(input: PublishEventInput) {
   };
 }
 
-export async function listEvents(tenantId: string, options: { type?: string; limit: number }) {
+export async function listEvents(tenantId: string, options: { type?: string; limit: number; includeHistorical?: boolean }) {
   const events = await prisma.event.findMany({
     where: {
       tenantId,
+      ...(!options.includeHistorical ? { OR: [
+        { deliveries: { none: {} } },
+        { deliveries: { some: { subscription: { archivedAt: null } } } },
+      ] } : {}),
       ...(options.type ? { type: options.type } : {}),
     },
     orderBy: { createdAt: "desc" },
     take: options.limit,
-    include: { _count: { select: { deliveries: true } } },
+    include: { _count: { select: { deliveries: true } }, deliveries: { select: { subscription: { select: { archivedAt: true } } } } },
   });
 
-  return events.map(toPublicEvent);
+  return events.map(({ deliveries, ...event }) => ({ ...toPublicEvent(event), historical: deliveries.length > 0 && deliveries.every(d => d.subscription.archivedAt !== null) }));
 }
 
 export async function getEvent(tenantId: string, id: string) {
   const event = await prisma.event.findFirst({
     where: { id, tenantId },
-    include: { deliveries: { include: { subscription: { select: { id: true, targetUrl: true, description: true } } } } },
+    include: { deliveries: { include: { subscription: { select: { id: true, targetUrl: true, description: true, archivedAt: true, status: true } } } } },
   });
   if (!event) throw new NotFoundError("Event", id);
-  return toPublicEvent(event);
+  return { ...toPublicEvent(event), historical: event.deliveries.length > 0 && event.deliveries.every(d => d.subscription.archivedAt !== null) };
 }

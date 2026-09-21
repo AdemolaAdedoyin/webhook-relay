@@ -42,8 +42,9 @@ app has no local-destination bypass.
 6. Pause a subscription to hold queued work and new matching events. Resume
    continues them on the next reconciliation cycle (normally within 30 seconds),
    respecting existing retry delays and throughput limits. Already-claimed
-   requests may finish. Pause also preserves history. Deletion removes its deliveries and
-   attempts, but retains the original event, which may belong to other deliveries.
+   requests may finish. Archive retires a subscription, cancels queued work and
+   preserves read-only history. Use Include archived or Include historical to
+   inspect those records; opening an event now shows its payload and history.
 
 For a failure demo, use a receiver you control that returns HTTP 503, publish a
 new event, and inspect retry timing and responses. Restore successful responses

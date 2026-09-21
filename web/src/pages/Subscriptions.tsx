@@ -1,8 +1,10 @@
 import { useEffect, useState, Fragment, type ReactNode, type CSSProperties } from "react";
 import { api, Subscription } from "../api/client";
+import { Link } from "react-router-dom";
 import StatusPill from "../components/StatusPill";
 
 export default function Subscriptions() {
+  const [includeArchived, setIncludeArchived] = useState(false);
   const [subs, setSubs] = useState<Subscription[] | null>(null);
   const [editing, setEditing] = useState<Subscription | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -13,7 +15,7 @@ export default function Subscriptions() {
 
   async function refresh() {
     try {
-      setSubs(await api.listSubscriptions());
+      setSubs(await api.listSubscriptions(includeArchived));
       setError(null);
     } catch (err: any) {
       setError(err.message);
@@ -22,7 +24,7 @@ export default function Subscriptions() {
 
   useEffect(() => {
     refresh();
-  }, []);
+  }, [includeArchived]);
 
   async function handleCreate(data: { targetUrl: string; description?: string; eventTypes: string[] }) {
     const created = await api.createSubscription(data);
@@ -43,7 +45,7 @@ export default function Subscriptions() {
     await action(sub, () => api.updateSubscriptionStatus(sub.id, next));
   }
   async function remove(sub: Subscription) {
-    if (!confirm(`Delete ${sub.targetUrl}? This permanently deletes its deliveries and attempt history. Original events remain. Use Pause to preserve delivery history.`)) return;
+    if (!confirm(`Archive ${sub.targetUrl}? Queued deliveries will be cancelled. History remains readable, but this subscription cannot be changed or replayed. Use Pause to hold work temporarily.`)) return;
     await action(sub, async () => { await api.deleteSubscription(sub.id); if (editing?.id === sub.id) setEditing(null); });
   }
   async function rotate(sub: Subscription) {
@@ -83,8 +85,9 @@ export default function Subscriptions() {
         </button>
       </div>
 
-      <p className="muted">Pause holds queued deliveries and new matching events without consuming attempts. Resume continues the backlog within the next reconciliation cycle (normally 30 seconds); in-flight requests may finish. Delete removes delivery history but keeps original events.</p>
+      <p className="muted">Pause holds queued deliveries and new matching events without consuming attempts. Resume continues the backlog within the next reconciliation cycle (normally 30 seconds); in-flight requests may finish. Archive cancels queued work and preserves read-only history.</p>
       {error && <ErrorBanner message={error} />}
+      <label><input type="checkbox" checked={includeArchived} onChange={e => setIncludeArchived(e.target.checked)} /> Include archived</label>{" "}
       <button onClick={refresh} disabled={!!busy}>Refresh subscriptions</button>
       {editing && <LimitsForm key={editing.id} subscription={editing} onClose={() => setEditing(null)} onSaved={async () => { setEditing(null); await refresh(); }} />}
 
@@ -162,7 +165,7 @@ export default function Subscriptions() {
                   <div className="mono" style={{ fontSize: 12.5 }}>
                     {sub.description || "Unnamed subscription"}
                   </div>
-                  <div className="muted wrap" style={{ marginTop: 2 }}>{sub.id}</div>
+                  <div className="muted wrap" style={{ marginTop: 2 }}>{sub.id}</div><Link className="muted" to={`/deliveries?subscriptionId=${sub.id}`}>View delivery history</Link>
                 </td>
                 <td>
                   {sub.eventTypes.length === 0 ? (
@@ -172,7 +175,7 @@ export default function Subscriptions() {
                   )}
                 </td>
                 <td>
-                  <StatusPill status={sub.status} />
+                  <StatusPill status={sub.archivedAt ? "ARCHIVED" : sub.status} />
                   {sub.consecutiveFailures > 0 && (
                     <div style={{ fontSize: 11, color: "var(--failure)", marginTop: 2 }}>
                       {sub.consecutiveFailures} consecutive failures
@@ -183,7 +186,7 @@ export default function Subscriptions() {
                   {sub.maxConcurrentDeliveries} concurrent<br />{sub.minDeliveryIntervalMs ? `${sub.minDeliveryIntervalMs} ms between starts` : "No pacing"}
                 </td>
                 <td>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                  {sub.archivedAt ? <span className="muted">Archived {new Date(sub.archivedAt).toLocaleDateString()} · Read-only</span> : <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                     {(
                       <button disabled={!!busy} onClick={() => toggleStatus(sub)} style={linkButtonStyle}>
                         {sub.status === "ACTIVE" ? "Pause" : sub.status === "DISABLED" ? "Reactivate" : "Resume"}
@@ -192,9 +195,9 @@ export default function Subscriptions() {
                     <button disabled={!!busy} onClick={() => setEditing(sub)} style={linkButtonStyle}>Edit limits</button>
                     <button disabled={!!busy} onClick={() => rotate(sub)} style={linkButtonStyle}>Rotate secret</button>
                     <button disabled={!!busy} onClick={() => remove(sub)} style={{ ...linkButtonStyle, color: "var(--failure)" }}>
-                      Delete
+                      Archive
                     </button>
-                  </div>
+                  </div>}
                 </td>
               </tr>
             ))}</Fragment>)}

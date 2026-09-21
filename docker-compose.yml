@@ -48,6 +48,7 @@ services:
     environment:
       NODE_ENV: development
       SIGNING_SECRET_KEY: ${SIGNING_SECRET_KEY:-}
+      DELIVERY_MAX_REPLAYS: ${DELIVERY_MAX_REPLAYS:-5}
       DATABASE_URL: postgresql://webhook_relay:webhook_relay@postgres:5432/webhook_relay
       REDIS_URL: redis://redis:6379
       DEMO_API_KEY: ${DEMO_API_KEY:-}
@@ -72,6 +73,7 @@ services:
     environment:
       NODE_ENV: development
       SIGNING_SECRET_KEY: ${SIGNING_SECRET_KEY:-}
+      DELIVERY_MAX_REPLAYS: ${DELIVERY_MAX_REPLAYS:-5}
       DATABASE_URL: postgresql://webhook_relay:webhook_relay@postgres:5432/webhook_relay
       REDIS_URL: redis://redis:6379
       PORT: 3000
@@ -102,6 +104,7 @@ services:
     environment:
       NODE_ENV: development
       SIGNING_SECRET_KEY: ${SIGNING_SECRET_KEY:-}
+      DELIVERY_MAX_REPLAYS: ${DELIVERY_MAX_REPLAYS:-5}
       DATABASE_URL: postgresql://webhook_relay:webhook_relay@postgres:5432/webhook_relay
       REDIS_URL: redis://redis:6379
     depends_on:

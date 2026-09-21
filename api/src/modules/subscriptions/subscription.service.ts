@@ -33,7 +33,7 @@ export async function createSubscription(input: CreateSubscriptionInput) {
   const subscription = await prisma.$transaction(async (tx) => {
     // Serializes creates for this tenant, including concurrent overlapping requests.
     await tx.$queryRaw`SELECT id FROM "Tenant" WHERE id = ${input.tenantId} FOR UPDATE`;
-    const existing = await tx.subscription.findMany({ where: { tenantId: input.tenantId } });
+    const existing = await tx.subscription.findMany({ where: { tenantId: input.tenantId, archivedAt: null } });
     const conflict = existing.some((sub) => {
       const url = new URL(sub.targetUrl); url.hash = "";
       return url.toString() === targetUrl && (sub.eventTypes.length === 0 || eventTypes.length === 0 ||
@@ -58,9 +58,9 @@ export async function createSubscription(input: CreateSubscriptionInput) {
   return { ...toPublicSubscription(subscription), secret };
 }
 
-export async function listSubscriptions(tenantId: string) {
+export async function listSubscriptions(tenantId: string, includeArchived = false) {
   const subs = await prisma.subscription.findMany({
-    where: { tenantId },
+    where: { tenantId, ...(includeArchived ? {} : { archivedAt: null }) },
     orderBy: { createdAt: "desc" },
   });
   return subs.map(toPublicSubscription);
@@ -80,17 +80,26 @@ export async function updateSubscriptionStatus(
   const sub = await prisma.subscription.findFirst({ where: { id, tenantId } });
   if (!sub) throw new NotFoundError("Subscription", id);
 
-  const updated = await prisma.subscription.update({
-    where: { id },
+  const updated = await prisma.subscription.updateMany({
+    where: { id, tenantId, archivedAt: null },
     data: { status, consecutiveFailures: status === "ACTIVE" ? 0 : sub.consecutiveFailures },
   });
-  return toPublicSubscription(updated);
+  if (updated.count !== 1) throw new AppError("Subscription is archived", 409, "SUBSCRIPTION_ARCHIVED");
+  return getSubscription(tenantId, id);
 }
 
 export async function deleteSubscription(tenantId: string, id: string) {
-  const sub = await prisma.subscription.findFirst({ where: { id, tenantId } });
-  if (!sub) throw new NotFoundError("Subscription", id);
-  await prisma.subscription.delete({ where: { id } });
+  await prisma.$transaction(async (tx) => {
+    // Publish/create use the same tenant lock; no new fan-out can race archival.
+    await tx.$queryRaw`SELECT id FROM "Tenant" WHERE id = ${tenantId} FOR UPDATE`;
+    const rows = await tx.$queryRaw<Array<{ id: string }>>`SELECT id FROM "Subscription" WHERE id = ${id} AND "tenantId" = ${tenantId} FOR UPDATE`;
+    if (!rows.length) throw new NotFoundError("Subscription", id);
+    const sub = await tx.subscription.findUniqueOrThrow({ where: { id } });
+    if (!sub.archivedAt) await tx.subscription.update({ where: { id }, data: { archivedAt: new Date() } });
+    await tx.delivery.updateMany({ where: { subscriptionId: id, status: { in: ["PENDING", "RETRYING"] } }, data: {
+      status: "CANCELLED", nextAttemptAt: null, processingHeartbeatAt: null, errorMessage: "Subscription archived",
+    } });
+  });
 }
 
 function toPublicSubscription<T extends { secret: string; nextDeliveryAllowedAt?: Date | null; previousSecret?: string | null; previousSecretExpiresAt?: Date | null }>(sub: T) {
@@ -102,7 +111,7 @@ export async function updateSubscriptionLimits(
   tenantId: string, id: string,
   limits: { maxConcurrentDeliveries?: number; minDeliveryIntervalMs?: number }
 ) {
-  const updated = await prisma.subscription.updateMany({ where: { id, tenantId }, data: limits });
+  const updated = await prisma.subscription.updateMany({ where: { id, tenantId, archivedAt: null }, data: limits });
   if (updated.count !== 1) throw new NotFoundError("Subscription", id);
   return getSubscription(tenantId, id);
 }
