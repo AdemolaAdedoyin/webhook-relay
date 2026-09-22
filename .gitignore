@@ -7,3 +7,4 @@ coverage/
 .relay-api-key
 *.tsbuildinfo
 backups/
+.env.production

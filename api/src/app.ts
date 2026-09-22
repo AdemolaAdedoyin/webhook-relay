@@ -1,3 +1,4 @@
+import { config } from "./config";
 import { randomUUID } from "node:crypto";
 import express from "express";
 import cors from "cors";
@@ -17,7 +18,10 @@ import { operationsRouter } from "./modules/operations/operations.routes";
 export function createApp() {
   const app = express();
 
-  app.use(cors({ exposedHeaders: ["X-Request-Id"] }));
+  app.disable("x-powered-by");
+  app.set("trust proxy", config.TRUST_PROXY_HOPS);
+  app.use((_req, res, next) => { res.setHeader("Cache-Control", "no-store"); next(); });
+  app.use(cors({ origin: config.CORS_ORIGINS.length ? config.CORS_ORIGINS : true, exposedHeaders: ["X-Request-Id"] }));
   app.use(pinoHttp({
     logger,
     genReqId(req, res) {

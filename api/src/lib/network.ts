@@ -33,6 +33,9 @@ function isUnsafeIpv4(address: string): boolean {
     (a === 172 && b >= 16 && b <= 31) ||
     (a === 192 && b === 0) ||
     (a === 192 && b === 168) ||
+    (a === 192 && b === 0 && parts[2] === 2) ||
+    (a === 198 && b === 51 && parts[2] === 100) ||
+    (a === 203 && b === 0 && parts[2] === 113) ||
     (a === 198 && (b === 18 || b === 19)) ||
     a >= 224
   );
@@ -42,7 +45,7 @@ export function isUnsafeIpAddress(address: string): boolean {
   if (isUnsafeIpv4(address)) return true;
   if (isIP(address) !== 6) return false;
 
-  const lower = address.toLowerCase();
+  const lower = new URL(`http://[${address}]/`).hostname.slice(1, -1).toLowerCase();
 
   // Reject all IPv4-mapped IPv6 destinations. This is intentionally stricter
   // than decoding every textual variant and avoids bypasses such as
@@ -50,6 +53,10 @@ export function isUnsafeIpAddress(address: string): boolean {
   if (lower.startsWith("::ffff:")) return true;
 
   return (
+    !/^[23][0-9a-f]{3}:/.test(lower) ||
+    lower.startsWith("2002:") ||
+    lower.startsWith("3fff:") ||
+    /^2001:(?:[0-9a-f]{1,2}|1[0-9a-f]{2}):/.test(lower) ||
     lower === "::" ||
     lower === "::1" ||
     lower.startsWith("fc") ||

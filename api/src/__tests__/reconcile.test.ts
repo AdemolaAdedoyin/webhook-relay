@@ -72,4 +72,15 @@ describe("delivery reconciliation", () => {
     expect(result).toEqual({ checked: 2, repaired: 1, failed: 1 });
     expect(mocks.warn).toHaveBeenCalledOnce();
   });
+  it("advances beyond a full backlog page and wraps after the final page", async () => {
+    const rows = Array.from({ length: 1000 }, (_, i) => ({ id: `delivery_${String(i).padStart(4, "0")}`, runNumber: 1, attemptCount: 0, nextAttemptAt: null }));
+    mocks.findMany.mockResolvedValueOnce(rows).mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+    mocks.enqueueDelivery.mockResolvedValue({});
+    await reconcilePendingDeliveries();
+    await reconcilePendingDeliveries();
+    expect(mocks.findMany.mock.calls[1]![0].where.id).toEqual({ gt: "delivery_0999" });
+    await reconcilePendingDeliveries();
+    expect(mocks.findMany.mock.calls[2]![0].where.id).toBeUndefined();
+  });
+
 });

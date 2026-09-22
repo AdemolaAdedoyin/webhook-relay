@@ -2,7 +2,8 @@ import { Worker, Job, DelayedError } from "bullmq";
 import { prisma } from "../db";
 import { config } from "../config";
 import { logger } from "../lib/logger";
-import { assertSafeWebhookUrl, readResponseSnippet } from "../lib/network";
+import { postWebhook } from "../lib/webhookTransport";
+import { assertSafeWebhookUrl } from "../lib/network";
 import { revealSecret } from "../lib/secretEncryption";
 import { signPayload } from "../lib/signature";
 import { redisConnection } from "./connection";
@@ -113,23 +114,17 @@ async function processDelivery(job: Job<DeliveryJobData>, token?: string) {
     try {
       const target = await assertSafeWebhookUrl(delivery.subscription.targetUrl);
 
-      const res = await fetch(target, {
-        method: "POST",
-        headers: {
+      const res = await postWebhook(target, {
           "Content-Type": "application/json",
           "Webhook-Signature": signature,
           "Webhook-Event-Type": delivery.event.type,
           "Webhook-Delivery-Id": delivery.id,
           "Webhook-Delivery-Run": String(runNumber),
           "User-Agent": "webhook-relay/1.0",
-        },
-        body: rawBody,
-        signal: controller.signal,
-        redirect: "manual",
-      });
+      }, rawBody, controller.signal, MAX_RESPONSE_SNIPPET_BYTES);
 
       responseStatus = res.status;
-      responseBodySnippet = await readResponseSnippet(res, MAX_RESPONSE_SNIPPET_BYTES).catch(() => "");
+      responseBodySnippet = res.snippet;
 
       if (res.status >= 300 && res.status < 400) {
         errorMessage = `Endpoint redirect HTTP ${res.status} is not allowed`;

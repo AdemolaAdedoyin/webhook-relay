@@ -3,35 +3,27 @@ import { config } from "./config";
 import { logger } from "./lib/logger";
 import { prisma } from "./db";
 import { reconcilePendingDeliveries } from "./queue/reconcile";
+import { startMaintenanceLoop } from "./queue/maintenanceLoop";
+import { deliveryQueue } from "./queue/deliveryQueue";
+import { redisConnection } from "./queue/connection";
 
-const RECONCILE_INTERVAL_MS = 30_000;
-const app = createApp();
-
-const server = app.listen(config.PORT, () => {
-  logger.info(`webhook-relay API listening on :${config.PORT}`);
-});
-
-void reconcilePendingDeliveries().catch((error) => {
-  logger.warn({ err: error }, "initial delivery reconciliation failed");
-});
-
-const reconcileTimer = setInterval(() => {
-  void reconcilePendingDeliveries().catch((error) => {
-    logger.warn({ err: error }, "periodic delivery reconciliation failed");
-  });
-}, RECONCILE_INTERVAL_MS);
-reconcileTimer.unref();
-
+const server = createApp().listen(config.PORT, () => logger.info(`webhook-relay API listening on :${config.PORT}`));
+const stopMaintenance = startMaintenanceLoop(async () => { await reconcilePendingDeliveries(); }, 30_000,
+  error => logger.warn({ err: error }, "delivery reconciliation failed"));
+let stopping = false;
 async function shutdown(signal: string) {
-  logger.info(`received ${signal}, shutting down gracefully`);
-  clearInterval(reconcileTimer);
-  server.close(async () => {
+  if (stopping) return;
+  stopping = true;
+  logger.info({ signal }, "API shutting down");
+  const deadline = setTimeout(() => process.exit(1), 25_000); deadline.unref();
+  try {
+    await Promise.all([stopMaintenance(), new Promise<void>((resolve, reject) => server.close(err => err ? reject(err) : resolve()))]);
+    await deliveryQueue.close();
+    await redisConnection.quit();
     await prisma.$disconnect();
-    process.exit(0);
-  });
-  // Force-exit if graceful shutdown hangs
-  setTimeout(() => process.exit(1), 10_000).unref();
+    clearTimeout(deadline);
+    logger.info("API stopped cleanly");
+  } catch (err) { logger.error({ err }, "API shutdown failed"); process.exitCode = 1; }
 }
-
-process.on("SIGTERM", () => shutdown("SIGTERM"));
-process.on("SIGINT", () => shutdown("SIGINT"));
+process.once("SIGTERM", () => void shutdown("SIGTERM"));
+process.once("SIGINT", () => void shutdown("SIGINT"));
